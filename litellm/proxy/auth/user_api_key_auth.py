@@ -51,6 +51,7 @@ from litellm.proxy.auth.auth_checks import (
 from litellm.proxy.auth.auth_exception_handler import UserAPIKeyAuthExceptionHandler
 from litellm.proxy.auth.auth_utils import (
     abbreviate_api_key,
+    dnl_route_is_unauthenticated_data_plane,
     get_end_user_id_from_request_body,
     get_model_from_request,
     get_request_route,
@@ -1078,6 +1079,19 @@ async def _user_api_key_auth_builder(  # noqa: PLR0915
                 api_key = response
             elif isinstance(response, UserAPIKeyAuth):
                 return response
+
+        # DNL fork: opt-in data-plane bypass, placed after the JWT/OAuth2/
+        # OAuth2-proxy/custom-auth blocks above (all of which `return`
+        # earlier on success), so those still take precedence for
+        # data-plane routes whenever configured.
+        if dnl_route_is_unauthenticated_data_plane(
+            route=route, general_settings=general_settings
+        ):
+            return UserAPIKeyAuth(
+                api_key=api_key if isinstance(api_key, str) else None,
+                user_role=LitellmUserRoles.INTERNAL_USER,
+                parent_otel_span=parent_otel_span,
+            )
         if master_key is None:
             if isinstance(api_key, str):
                 return UserAPIKeyAuth(
@@ -1874,7 +1888,12 @@ async def _run_centralized_common_checks(  # noqa: PLR0915
     # Running common_checks would block every admin route on these
     # deployments where that was previously not the contract. If any
     # authn is enabled (JWT, OAuth2, OAuth2-proxy), authz must run.
-    if master_key is None and not (
+    if (
+        master_key is None
+        or dnl_route_is_unauthenticated_data_plane(
+            route=route, general_settings=general_settings
+        )
+    ) and not (
         general_settings.get("enable_jwt_auth", False)
         or general_settings.get("enable_oauth2_auth", False)
         or general_settings.get("enable_oauth2_proxy_auth", False)

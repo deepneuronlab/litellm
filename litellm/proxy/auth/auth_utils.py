@@ -502,6 +502,69 @@ def route_in_additonal_public_routes(current_route: str):
         return False
 
 
+_DNL_NARROW_DATA_PLANE_ROUTES = (
+    LiteLLMRoutes.openai_routes.value
+    + LiteLLMRoutes.anthropic_routes.value
+    + LiteLLMRoutes.google_routes.value
+)
+
+
+def dnl_route_is_unauthenticated_data_plane(
+    route: str, general_settings: Optional[dict]
+) -> bool:
+    """DNL fork addition. general_settings.dnl_unauthenticated_llm_routes lets
+    a configured master_key gate only the Admin UI/management API while
+    LLM-serving (data-plane) routes stay unauthenticated. Off by default --
+    upstream behavior is unchanged when the flag is unset.
+
+    Called identically from _user_api_key_auth_builder (grants the bare
+    token) and _run_centralized_common_checks (skips budget/team checks for
+    it) in user_api_key_auth.py -- one shared predicate, not two
+    independently-derived conditions, so the two sites cannot disagree.
+
+    Scope is deliberately narrow: openai_routes + anthropic_routes +
+    google_routes (chat/completions, embeddings, responses, moderations,
+    audio, rerank, realtime, /v1/models, messages, images, videos, batches,
+    files, fine_tuning, assistants, threads, vector_stores, search, ocr,
+    containers, ...) -- the full OpenAI/Anthropic/Google-compatible serving
+    surface, matched via RouteChecks.check_route_access, which handles
+    exact, "prefix*" wildcard, and "{param}" template routes -- a plain
+    `route in (...)` test would silently miss parameterized routes like
+    "/responses/{response_id}", since get_request_route() returns the
+    concrete request path, never the route template.
+
+    Deliberately does NOT offer a broader opt-in (e.g. MCP tool-call, agent
+    invocation, or RAG ingest/query routes): keep the exposed surface fixed
+    to what DNL's current callers actually use. Widen
+    _DNL_NARROW_DATA_PLANE_ROUTES explicitly, with review, if that changes.
+
+    Hard off whenever JWT, OAuth2, OAuth2-proxy, or a custom auth function is
+    configured, so a request actually authenticated via one of those for the
+    same route always still gets full common_checks/budget enforcement --
+    this flag only ever narrows the bare master-key requirement.
+    """
+    if not general_settings or not general_settings.get(
+        "dnl_unauthenticated_llm_routes", False
+    ):
+        return False
+    if (
+        general_settings.get("enable_jwt_auth", False)
+        or general_settings.get("enable_oauth2_auth", False)
+        or general_settings.get("enable_oauth2_proxy_auth", False)
+    ):
+        return False
+    from litellm.proxy.proxy_server import user_custom_auth
+
+    if user_custom_auth is not None:
+        return False
+
+    from litellm.proxy.auth.route_checks import RouteChecks
+
+    return RouteChecks.check_route_access(
+        route=route, allowed_routes=_DNL_NARROW_DATA_PLANE_ROUTES
+    )
+
+
 def get_request_route(request: Request) -> str:
     """
     Resolve the request route from the ASGI scope, with ``root_path`` stripped.
