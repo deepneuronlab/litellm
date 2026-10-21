@@ -1061,6 +1061,7 @@ API_ROUTE_TO_CALL_TYPES: Final[Mapping[str, Sequence[CallTypes]]] = {
     "/responses": (CallTypes.aresponses, CallTypes.responses),
     "/v1/responses": (CallTypes.aresponses, CallTypes.responses),
     "/openai/v1/responses": (CallTypes.aresponses, CallTypes.responses),
+    "/openai/responses": (CallTypes.aresponses, CallTypes.responses),
     "/responses/{response_id}": (CallTypes.aresponses, CallTypes.responses),
     "/v1/responses/{response_id}": (CallTypes.aresponses, CallTypes.responses),
     "/openai/v1/responses/{response_id}": (CallTypes.aresponses, CallTypes.responses),

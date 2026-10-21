@@ -197,6 +197,15 @@ async def _resolve_cursor_model_variant_before_auth(request: Request) -> None:
         safe_set_request_parsed_body(request=request, parsed_body=resolved)
 
 
+# Azure OpenAI SDK clients (AzureOpenAI(base_url=<gateway>)) post to
+# /openai/responses; serve it with the native handler so routing, session
+# affinity and caching behave exactly as on /v1/responses.
+@router.post(
+    "/openai/responses",
+    dependencies=[Depends(user_api_key_auth)],
+    tags=["responses"],
+    responses=RESPONSES_API_CREATE_RESPONSE_SCHEMAS,
+)
 @router.post(
     "/v1/responses",
     dependencies=[Depends(user_api_key_auth)],
