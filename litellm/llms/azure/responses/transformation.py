@@ -53,7 +53,8 @@ class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
             model = model.replace("responses/", "")
         if "o_series" in model:
             model = model.replace("o_series/", "")
-        return model
+        # gpt5_series/ is LiteLLM's routing marker, not part of the Azure deployment name.
+        return model.removeprefix("gpt5_series/")
 
     def _handle_reasoning_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
         """

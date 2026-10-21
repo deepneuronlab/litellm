@@ -23,6 +23,14 @@ from litellm.types.responses.main import DeleteResponseResult
 router = APIRouter()
 
 
+# Azure OpenAI SDK clients (AzureOpenAI(base_url=<gateway>)) post to
+# /openai/responses; serve it with the native handler so routing, session
+# affinity and caching behave exactly as on /v1/responses.
+@router.post(
+    "/openai/responses",
+    dependencies=[Depends(user_api_key_auth)],
+    tags=["responses"],
+)
 @router.post(
     "/v1/responses",
     dependencies=[Depends(user_api_key_auth)],

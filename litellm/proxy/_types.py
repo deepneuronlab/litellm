@@ -365,6 +365,7 @@ class LiteLLMRoutes(enum.Enum):
         "/v1/realtime?{model}",
         "/openai/v1/realtime?{model}",
         # responses API
+        "/openai/responses",
         "/responses",
         "/v1/responses",
         "/responses/{response_id}",
