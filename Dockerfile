@@ -7,6 +7,23 @@ ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.11.7@sha256:240fb85ab0f263ef12f492d8476aa3a2
 
 FROM $UV_IMAGE AS uvbin
 
+# Current Wolfi Node packages require a newer glibc than the pinned base.
+FROM $LITELLM_BUILD_IMAGE AS nodebin
+RUN apk add --no-cache curl xz
+RUN set -eu; \
+    case "$(uname -m)" in \
+        x86_64) arch=x64; sha=6170b2d474e1c626f43cff3adc118df9fe3b573258a4fc3d850c8dbc6b079bbd ;; \
+        aarch64) arch=arm64; sha=42aa04922591ee5d4dbc7740d452621acf28508239daa512f5ee8c47ee224fdb ;; \
+        *) echo "Unsupported Node architecture" >&2; exit 1 ;; \
+    esac; \
+    archive="node-v26.12.1-linux-${arch}.tar.xz"; \
+    curl --fail --show-error --location --proto '=https' --retry 3 \
+        -o "/tmp/${archive}" "https://nodejs.org/dist/v26.12.1/${archive}"; \
+    printf '%s  %s\n' "$sha" "/tmp/${archive}" | sha256sum -c -; \
+    mkdir -p /opt/node; \
+    tar -xJf "/tmp/${archive}" -C /opt/node --strip-components=1; \
+    rm "/tmp/${archive}"
+
 # Builder stage
 FROM $LITELLM_BUILD_IMAGE AS builder
 
@@ -15,6 +32,7 @@ USER root
 
 COPY --from=uvbin /uv /usr/local/bin/uv
 COPY --from=uvbin /uvx /usr/local/bin/uvx
+COPY --from=nodebin /opt/node /opt/node
 
 RUN apk add --no-cache \
     bash \
@@ -22,15 +40,13 @@ RUN apk add --no-cache \
     libatomic \
     openssl \
     openssl-dev \
-    nodejs \
-    npm \
     libsndfile
 
 ARG UV_PYTHON_VERSION=3.13.13
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python \
     UV_PROJECT_ENVIRONMENT=/app/.venv \
     UV_LINK_MODE=copy \
-    PATH="/app/.venv/bin:${PATH}"
+    PATH="/app/.venv/bin:/opt/node/bin:${PATH}"
 
 RUN uv python install --no-bin "$UV_PYTHON_VERSION"
 
@@ -70,8 +86,10 @@ RUN sed -i 's/\r$//' docker/entrypoint.sh && chmod +x docker/entrypoint.sh && \
 FROM $LITELLM_RUNTIME_IMAGE AS runtime
 
 USER root
+COPY --from=nodebin /opt/node /opt/node
+ENV PATH="/opt/node/bin:${PATH}"
 
-RUN apk add --no-cache bash openssl tzdata nodejs npm libsndfile libatomic && \
+RUN apk add --no-cache bash openssl tzdata libsndfile libatomic libstdc++ && \
     npm install -g npm@11.14.0 tar@7.5.11 glob@13.0.6 @isaacs/brace-expansion@5.0.1 brace-expansion@5.0.5 minimatch@10.2.4 diff@8.0.3 picomatch@4.0.4 && \
     GLOBAL="$(npm root -g)" && \
     for pkg in tar glob @isaacs/brace-expansion brace-expansion minimatch diff picomatch; do \
@@ -81,7 +99,8 @@ RUN apk add --no-cache bash openssl tzdata nodejs npm libsndfile libatomic && \
         done; \
     done && \
     npm cache clean --force && \
-    { apk del --no-cache npm 2>/dev/null || true; }
+    test "$(npm --version)" = 11.14.0 && \
+    rm -rf /opt/node/lib/node_modules/npm /opt/node/bin/npm /opt/node/bin/npx
 
 WORKDIR /app
 ENV PATH="/app/.venv/bin:${PATH}"
@@ -97,6 +116,9 @@ RUN /app/.venv/bin/python -c \
 # on the runtime sys.path).
 COPY --from=builder /root/.cache/prisma /root/.cache/prisma
 COPY --from=builder /root/.cache/prisma-python /root/.cache/prisma-python
+
+RUN test "$(node --version)" = v26.12.1 && \
+    prisma --version
 
 RUN find /app/.venv -type f -path "*/tornado/test/*" -delete && \
     find /app/.venv -type d -path "*/tornado/test" -delete

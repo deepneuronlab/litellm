@@ -13,6 +13,15 @@ steps use that interpreter, and the image build verifies its version and
 standard-library imports in the runtime stage. An unqualified `--python python3`
 request can select managed Python 3.14, outside this project's `<3.14` bound.
 
+The root image also uses official Node.js 26.12.1 archives with checked-in SHA-256
+pins for Linux x64 and ARM64. Both archives were verified against Node's official
+release checksums; their ELF requirements top out at GLIBC 2.28. Current Wolfi
+Node packages require GLIBC 2.44, which the pinned base does not provide.
+The same `/opt/node` distribution is used in the builder and runtime. Existing
+npm security patches are applied before removing npm and npx from the runtime;
+Node remains available for Prisma. The final image build checks Node's version
+and runs the cached Prisma CLI after npm cleanup, without database access.
+
 ## Building and Running the Application
 
 To build and run the application, you will use the `docker-compose.yml` file located in the root of the project. This file is configured to use the `Dockerfile.non_root` for a secure, non-root container environment.
