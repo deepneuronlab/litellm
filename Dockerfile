@@ -19,7 +19,7 @@ COPY --from=uvbin /uvx /usr/local/bin/uvx
 RUN apk add --no-cache \
     bash \
     gcc \
-    openssl \
+    libatomic \
     openssl-dev \
     nodejs \
     npm \
@@ -70,7 +70,7 @@ FROM $LITELLM_RUNTIME_IMAGE AS runtime
 
 USER root
 
-RUN apk add --no-cache bash openssl tzdata nodejs npm libsndfile && \
+RUN apk add --no-cache bash openssl tzdata nodejs npm libsndfile libatomic && \
     npm install -g npm@11.14.0 tar@7.5.11 glob@13.0.6 @isaacs/brace-expansion@5.0.1 brace-expansion@5.0.5 minimatch@10.2.4 diff@8.0.3 picomatch@4.0.4 && \
     GLOBAL="$(npm root -g)" && \
     for pkg in tar glob @isaacs/brace-expansion brace-expansion minimatch diff picomatch; do \
