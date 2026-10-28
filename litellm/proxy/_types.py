@@ -374,6 +374,10 @@ class LiteLLMRoutes(enum.Enum):
         "/v1/responses/{response_id}/input_items",
         "/responses/{response_id}/cancel",
         "/v1/responses/{response_id}/cancel",
+        "/decisions",
+        "/v1/decisions",
+        "/openai/decisions",
+        "/openai/v1/decisions",
         # vector stores
         "/vector_stores",
         "/v1/vector_stores",

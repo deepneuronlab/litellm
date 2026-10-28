@@ -1442,7 +1442,7 @@ class ProxyBaseLLMRequestProcessing:
 
         # Always return the client-requested model name (not provider-prefixed internal identifiers)
         # for OpenAI-compatible responses.
-        if requested_model_from_client:
+        if requested_model_from_client and route_type != "allm_passthrough_route":
             _override_openai_response_model(
                 response_obj=response,
                 requested_model=requested_model_from_client,
@@ -1916,6 +1916,9 @@ class ProxyBaseLLMRequestProcessing:
                 provider_specific_fields=merged_fields,
                 headers=headers,
             )
+        elif isinstance(e, ProxyException):
+            e.headers = headers
+            raise e
         elif isinstance(e, httpx.HTTPStatusError):
             # Handle httpx.HTTPStatusError - extract actual error from response
             # This matches the original behavior before the refactor in commit 511d435f6f

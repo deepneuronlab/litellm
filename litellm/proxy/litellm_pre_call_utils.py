@@ -109,6 +109,7 @@ LITELLM_METADATA_ROUTES = (
     "batches",
     "/v1/messages",
     "responses",
+    "decisions",
     "files",
 )
 

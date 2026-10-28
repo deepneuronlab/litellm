@@ -91,6 +91,59 @@ curl -X POST http://localhost:4000/vllm/classify \
 -d '{"model": "roberta-base-language-detection", "input": "Hello, world!"}' \
 ```
 
+## Native Azure Decisions API
+
+The DNL fork serves `POST /decisions`, `/v1/decisions`, `/openai/decisions`, and
+`/openai/v1/decisions` before the OpenAI catch-all. AzureOpenAI clients can use
+the gateway as their Azure endpoint; OpenAI clients can use the gateway's `/v1`
+base URL. Requests contain a configured router model group, `input`, and
+`questions`, for example:
+
+```bash
+curl http://localhost:4000/v1/decisions \
+  -H 'Authorization: Bearer sk-your-virtual-key' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"decisions-model","input":"Please refund the duplicate charge.","questions":[{"type":"predicate","name":"refund_requested","instructions":"Does the customer request a refund?"}]}'
+```
+
+Only Azure deployments supporting Decisions are accepted. This endpoint does
+not translate Decisions requests to chat or Responses, and does not support
+streaming (`stream: false` is accepted). Model availability and request-schema
+validation remain Azure's responsibility. Unknown model groups and malformed
+metadata are rejected with HTTP 400 before reaching Azure.
+
+The handler uses the normal authenticated proxy pre-call, during-call, success,
+failure, and response-header hooks. Global, key, and router model aliases apply.
+Use `litellm_metadata` for proxy logging/session metadata; it is sanitized and
+attributed to the authenticated key, and is not forwarded to Azure. Provider
+request fields cannot override router credentials, providers, or destinations.
+
+Router deployment ordering, retry policies, and fallbacks apply, including
+DataZone order 1 followed by Global order 2 when configured. Each attempt uses
+that deployment's Azure key and deployment name. The outbound route is
+`/openai/v1/decisions`; incoming and deployment `api-version` values are not
+forwarded. Azure response bodies, including answers and usage, are returned
+unchanged. Input/output token usage is included in LiteLLM's standard success
+logging payload, and Azure HTTP error statuses are preserved for routing and
+the client.
+
+Implementation and regression tests belong to this fork, not an infrastructure
+image-layer patch. Build the native source using this repository's root
+`Dockerfile`. Image build/publication remains an explicit manual operation:
+publish a new immutable image tag to the deployment registry and record its
+digest before changing any infrastructure image reference. This feature does
+not add image-build automation or perform a cluster rollout.
+
+The mocked transport regression suite requires Python with LiteLLM's proxy
+dependencies installed (the native proxy image already contains them), but no
+database, provider credentials, or external Azure connection:
+
+```bash
+PYTHONPATH=. LITELLM_LOCAL_MODEL_COST_MAP=True \
+  python tests/test_litellm/proxy/test_decisions_endpoints.py -v
+```
+
+
 # How to add a provider for passthrough
 
 See [VLLMModelInfo](https://github.com/BerriAI/litellm/blob/main/litellm/llms/vllm/common_utils.py) for an example.

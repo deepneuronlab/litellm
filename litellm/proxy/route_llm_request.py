@@ -360,6 +360,14 @@ async def route_request(  # noqa: PLR0915 - Complex routing function, refactorin
         # Map generationConfig to config parameter for Google GenAI compatibility
         if "generationConfig" in data and "config" not in data:
             data["config"] = data.pop("generationConfig")
+    if (
+        route_type == "allm_passthrough_route"
+        and data.get("endpoint") == "openai/v1/decisions"
+    ):
+        from litellm.proxy.decisions_endpoints import route_decisions_request
+
+        return route_decisions_request(data=data, llm_router=llm_router)
+
     if "api_key" in data or "api_base" in data:
         if llm_router is not None:
             return getattr(llm_router, f"{route_type}")(**data)
