@@ -52,6 +52,21 @@ def get_call_types_for_route(route: str) -> Optional[List[CallTypes]]:
     return None
 
 
+def is_native_decisions_request(data: dict) -> bool:
+    """Recognize Decisions using the proxy's server-generated ASGI route."""
+    proxy_request = data.get("proxy_server_request")
+    request_route = (
+        proxy_request.get("route") if isinstance(proxy_request, dict) else None
+    )
+    if not isinstance(request_route, str):
+        return False
+    route_call_types = get_call_types_for_route(request_route) or []
+    return (
+        CallTypes.adecisions in route_call_types
+        and data.get("endpoint") == "openai/v1/decisions"
+    )
+
+
 def get_routes_for_call_type(call_type: CallTypes) -> list:
     """
     Get all routes that use a specific CallType.

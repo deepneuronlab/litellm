@@ -313,6 +313,7 @@ from litellm.proxy.credential_endpoints.endpoints import router as credential_ro
 from litellm.proxy.db.db_transaction_queue.spend_log_cleanup import SpendLogCleanup
 from litellm.proxy.db.exception_handler import PrismaDBExceptionHandler
 from litellm.proxy.db.spend_counter_reseed import SpendCounterReseed
+from litellm.proxy.decisions_endpoints import router as decisions_router
 from litellm.proxy.discovery_endpoints import ui_discovery_endpoints_router
 from litellm.proxy.fine_tuning_endpoints.endpoints import router as fine_tuning_router
 from litellm.proxy.fine_tuning_endpoints.endpoints import set_fine_tuning_config
@@ -15644,6 +15645,7 @@ async def get_routes():
 
 app.include_router(router)
 app.include_router(response_router)
+app.include_router(decisions_router)
 app.include_router(public_endpoints_router)
 app.include_router(rerank_router)
 app.include_router(ocr_router)
