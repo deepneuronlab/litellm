@@ -4,6 +4,7 @@ import httpx
 from fastapi import APIRouter, Depends, Request, Response
 
 import litellm
+from litellm.integrations.custom_guardrail import CustomGuardrail
 from litellm.llms.azure.passthrough.transformation import AZURE_DECISIONS_ENDPOINT
 from litellm.proxy._types import ProxyException, UserAPIKeyAuth
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
@@ -54,6 +55,17 @@ router = APIRouter(dependencies=[Depends(_validate_decisions_request)])
 async def _adecisions(
     *, model: str, json: dict, custom_llm_provider: Optional[str] = None, **kwargs
 ):
+    deployment_team = (kwargs.get("model_info") or {}).get("team_id")
+    request_team = (kwargs.get("litellm_metadata") or {}).get("user_api_key_team_id")
+    if deployment_team is not None and deployment_team != request_team:
+        raise litellm.PermissionDeniedError(
+            message="The Decisions deployment belongs to another team",
+            model=model,
+            llm_provider=custom_llm_provider or "azure",
+            response=httpx.Response(
+                403, request=httpx.Request("POST", "http://litellm-router/decisions")
+            ),
+        )
     deployment, provider, _, _ = litellm.get_llm_provider(
         model=model, custom_llm_provider=custom_llm_provider
     )
@@ -92,6 +104,29 @@ async def _adecisions(
         ) from e
 
 
+def _validate_selected_guardrails(data: dict, llm_router: Router) -> None:
+    from litellm.proxy.utils import _check_and_merge_model_level_guardrails
+
+    guardrail_data = _check_and_merge_model_level_guardrails(data, llm_router)
+    selected = CustomGuardrail().get_guardrail_from_metadata(guardrail_data)
+    if not isinstance(selected, list):
+        raise _invalid_request("guardrails must be a list", "guardrails")
+    configured = {
+        callback.guardrail_name
+        for callback in litellm.callbacks
+        if isinstance(callback, CustomGuardrail)
+    }
+    for selection in selected:
+        names = selection if isinstance(selection, dict) else [selection]
+        for name in names:
+            if not isinstance(name, str):
+                raise _invalid_request("guardrail names must be strings", "guardrails")
+            if name not in configured:
+                raise _invalid_request(
+                    f"Unknown guardrail for the Decisions API: {name!r}", "guardrails"
+                )
+
+
 async def route_decisions_request(data: dict, llm_router: Optional[Router]):
     if llm_router is None:
         raise _invalid_request(
@@ -101,8 +136,10 @@ async def route_decisions_request(data: dict, llm_router: Optional[Router]):
     team_id = (data.get("litellm_metadata") or {}).get("user_api_key_team_id")
     team_model = llm_router.map_team_model(model, team_id) if team_id else None
     model = team_model or model
+    _validate_selected_guardrails(data, llm_router)
     if not isinstance(model, str) or (
-        model not in llm_router.model_names
+        team_model is None
+        and model not in llm_router.model_names
         and model not in llm_router.model_group_alias
         and not llm_router.has_model_id(model)
     ):
@@ -128,6 +165,10 @@ async def route_decisions_request(data: dict, llm_router: Optional[Router]):
             "user",
             "request_timeout",
             "timeout",
+            "allowed_model_region",
+            "api_base",
+            "api_key",
+            "api_version",
         )
         if key in data
     }
@@ -175,16 +216,18 @@ async def decisions(
         version,
     )
 
-    # Provider fields stay inside json, never becoming LiteLLM credential/routing kwargs.
+    # Only authenticated preprocessing may add provider credentials at the root.
     data = {
         "model": body["model"],
         "endpoint": AZURE_DECISIONS_ENDPOINT,
         "json": {
-            key: value for key, value in body.items() if key != "litellm_metadata"
+            key: value
+            for key, value in body.items()
+            if key not in ("litellm_metadata", "guardrails")
         },
         "litellm_metadata": body.get("litellm_metadata") or {},
     }
-    for field in ("input", "questions", "metadata"):
+    for field in ("input", "questions", "metadata", "guardrails"):
         if field in body:
             data[field] = body[field]
     processor = ProxyBaseLLMRequestProcessing(data=data)

@@ -297,6 +297,11 @@ def llm_passthrough_route(
         params=params,
         headers=headers,
         cookies=cookies,
+        timeout=(
+            kwargs["timeout"]
+            if kwargs.get("timeout") is not None
+            else httpx.USE_CLIENT_DEFAULT
+        ),
     )
 
     ## IS STREAMING REQUEST

@@ -434,6 +434,7 @@ class CallTypes(str, Enum):
     alist_input_items = "alist_input_items"
     llm_passthrough_route = "llm_passthrough_route"
     allm_passthrough_route = "allm_passthrough_route"
+    adecisions = "adecisions"
 
     #########################################################
     # Google GenAI Native Call Types
@@ -523,6 +524,7 @@ CallTypesLiteral = Literal[
     "send_message",
     "aresponses",
     "responses",
+    "adecisions",
     "acreate_skill",
     "acreate_realtime_client_secret",
     "arealtime_calls",
@@ -838,6 +840,11 @@ API_ROUTE_TO_CALL_TYPES = {
     "/v1/responses/{response_id}": [CallTypes.aresponses, CallTypes.responses],
     "/responses/{response_id}/input_items": [CallTypes.alist_input_items],
     "/v1/responses/{response_id}/input_items": [CallTypes.alist_input_items],
+    # Azure Decisions uses native JSON, not chat completions.
+    "/decisions": [CallTypes.adecisions],
+    "/v1/decisions": [CallTypes.adecisions],
+    "/openai/decisions": [CallTypes.adecisions],
+    "/openai/v1/decisions": [CallTypes.adecisions],
     # Realtime API
     "/realtime": [CallTypes.arealtime],
     "/v1/realtime": [CallTypes.arealtime],

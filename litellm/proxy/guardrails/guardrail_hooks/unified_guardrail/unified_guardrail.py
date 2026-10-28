@@ -9,6 +9,7 @@ Unified Guardrail, leveraging LiteLLM's /applyGuardrail endpoint
 import copy
 import json
 from typing import Any, AsyncGenerator, List, Optional, Union
+from urllib.parse import urlsplit
 
 from fastapi import HTTPException
 
@@ -50,6 +51,25 @@ def _get_a2a_request_id(
 
 
 endpoint_guardrail_translation_mappings = None
+
+
+def _resolve_decisions_call_type(
+    data: dict, call_type: Optional[CallTypesLiteral]
+) -> Optional[CallTypesLiteral]:
+    if call_type not in (None, "allm_passthrough_route", "adecisions"):
+        return call_type
+    # The JSON endpoint field is client-controlled on other APIs. Only the
+    # server-generated HTTP request URL can identify a native Decisions request.
+    request_url = (data.get("proxy_server_request") or {}).get("url")
+    if not isinstance(request_url, str):
+        return call_type
+    route_call_types = get_call_types_for_route(urlsplit(request_url).path) or []
+    if (
+        CallTypes.adecisions in route_call_types
+        and data.get("endpoint") == "openai/v1/decisions"
+    ):
+        return "adecisions"
+    return call_type
 
 
 def _ensure_litellm_metadata(data: dict, user_api_key_dict: UserAPIKeyAuth) -> None:
@@ -119,6 +139,7 @@ class UnifiedLLMGuardrails(CustomLogger):
             )
             return data
 
+        call_type = _resolve_decisions_call_type(data, call_type)  # type: ignore
         if endpoint_guardrail_translation_mappings is None:
             endpoint_guardrail_translation_mappings = (
                 load_guardrail_translation_mappings()
@@ -126,6 +147,11 @@ class UnifiedLLMGuardrails(CustomLogger):
 
         try:
             if CallTypes(call_type) not in endpoint_guardrail_translation_mappings:
+                if call_type == "adecisions":
+                    raise HTTPException(
+                        status_code=400,
+                        detail="No Decisions guardrail translation registered",
+                    )
                 return data
         except ValueError:
             return data  # handle unmapped call types
@@ -179,6 +205,7 @@ class UnifiedLLMGuardrails(CustomLogger):
             )
             return data
 
+        call_type = _resolve_decisions_call_type(data, call_type)  # type: ignore
         if endpoint_guardrail_translation_mappings is None:
             endpoint_guardrail_translation_mappings = (
                 load_guardrail_translation_mappings()
@@ -187,6 +214,11 @@ class UnifiedLLMGuardrails(CustomLogger):
             call_type is not None
             and CallTypes(call_type) not in endpoint_guardrail_translation_mappings
         ):
+            if call_type == "adecisions":
+                raise HTTPException(
+                    status_code=400,
+                    detail="No Decisions guardrail translation registered",
+                )
             return data
 
         endpoint_translation = endpoint_guardrail_translation_mappings[
@@ -237,8 +269,8 @@ class UnifiedLLMGuardrails(CustomLogger):
             "async_post_call_success_hook response: %s", response
         )
 
-        call_type: Optional[CallTypesLiteral] = None
-        if user_api_key_dict.request_route is not None:
+        call_type: Optional[CallTypesLiteral] = _resolve_decisions_call_type(data, None)
+        if call_type is None and user_api_key_dict.request_route is not None:
             call_types = get_call_types_for_route(user_api_key_dict.request_route)
             if call_types is not None and len(call_types) > 0:  # type: ignore
                 call_type = call_types[0]  # type: ignore
@@ -264,6 +296,11 @@ class UnifiedLLMGuardrails(CustomLogger):
             )
 
         if CallTypes(call_type) not in endpoint_guardrail_translation_mappings:
+            if call_type == "adecisions":
+                raise HTTPException(
+                    status_code=400,
+                    detail="No Decisions guardrail translation registered",
+                )
             return response
 
         endpoint_translation = endpoint_guardrail_translation_mappings[

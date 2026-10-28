@@ -113,19 +113,30 @@ validation remain Azure's responsibility. Unknown model groups and malformed
 metadata are rejected with HTTP 400 before reaching Azure.
 
 The handler uses the normal authenticated proxy pre-call, during-call, success,
-failure, and response-header hooks. Global, key, and router model aliases apply.
+failure, and response-header hooks. Global, key, router, and team-public model
+aliases apply; another team's private deployment remains inaccessible.
 Use `litellm_metadata` for proxy logging/session metadata; it is sanitized and
 attributed to the authenticated key, and is not forwarded to Azure. Provider
 request fields cannot override router credentials, providers, or destinations.
+Administrator-configured team/project credential overrides still apply.
+
+Unified `apply_guardrail` policies scan Decisions input, question instructions
+and choices, and returned answer strings. Policies may reject or mask content;
+numeric probabilities and usage are not rewritten. Unknown selected policies,
+unsupported policy content shapes, and invalid text translations fail closed.
 
 Router deployment ordering, retry policies, and fallbacks apply, including
-DataZone order 1 followed by Global order 2 when configured. Each attempt uses
-that deployment's Azure key and deployment name. The outbound route is
-`/openai/v1/decisions`; incoming and deployment `api-version` values are not
-forwarded. Azure response bodies, including answers and usage, are returned
-unchanged. Input/output token usage is included in LiteLLM's standard success
-logging payload, and Azure HTTP error statuses are preserved for routing and
-the client.
+DataZone order 1 followed by Global order 2 when configured. Authenticated
+regional restrictions remain enforced through fallback, including non-chat
+requests without optional token prechecks. Each attempt honors its effective
+HTTP timeout without changing the shared client's default.
+
+The outbound route is `/openai/v1/decisions`; incoming and deployment
+`api-version` values are not forwarded. Azure response bodies, including answers
+and usage, are returned unchanged unless a selected policy masks answer text.
+Standard success logging preserves input/output totals, cache-read/cache-write
+details, and reasoning/prediction token details for cost accounting. Azure HTTP
+error statuses are preserved for routing and the client.
 
 The underlying passthrough failure callbacks still receive raw
 `httpx.HTTPStatusError` before the endpoint maps it to a status-aware exception.
@@ -140,13 +151,13 @@ publish a new immutable image tag to the deployment registry and record its
 digest before changing any infrastructure image reference. This feature does
 not add image-build automation or perform a cluster rollout.
 
-The mocked transport regression suite requires Python with LiteLLM's proxy
-dependencies installed (the native proxy image already contains them), but no
-database, provider credentials, or external Azure connection:
+The regression suites require Python with LiteLLM's proxy dependencies installed
+(the native proxy image already contains them), but no database, provider
+credentials, or external Azure connection. Deadline tests use a local TCP server:
 
 ```bash
 PYTHONPATH=. LITELLM_LOCAL_MODEL_COST_MAP=True \
-  python tests/test_litellm/proxy/test_decisions_endpoints.py -v
+  python -m unittest discover -s tests/test_litellm/proxy -p 'test_decisions*.py' -v
 ```
 
 

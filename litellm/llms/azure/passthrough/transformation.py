@@ -118,12 +118,19 @@ class AzurePassthroughConfig(BasePassthroughConfig):
         if endpoint == AZURE_DECISIONS_ENDPOINT:
             payload = httpx_response.json()
             usage = payload.get("usage") or {}
+            input_details = dict(usage.get("input_tokens_details") or {})
+            if "cache_write_tokens" in input_details:
+                input_details["cache_creation_tokens"] = input_details.pop(
+                    "cache_write_tokens"
+                )
             return ModelResponse(
                 model=payload.get("model", model),
                 usage=Usage(
                     prompt_tokens=usage.get("input_tokens", 0),
                     completion_tokens=usage.get("output_tokens", 0),
                     total_tokens=usage.get("total_tokens", 0),
+                    prompt_tokens_details=input_details or None,
+                    completion_tokens_details=usage.get("output_tokens_details"),
                 ),
             )
 

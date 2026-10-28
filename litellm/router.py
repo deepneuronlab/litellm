@@ -10287,6 +10287,37 @@ class Router:
                 )
                 return client
 
+    def _filter_deployments_by_region(
+        self,
+        model: str,
+        healthy_deployments: Union[List[Dict], Dict],
+        request_kwargs: Optional[Dict],
+    ) -> Union[List[Dict], Dict]:
+        allowed_region = (request_kwargs or {}).get("allowed_model_region")
+        if allowed_region is None:
+            return healthy_deployments
+        if isinstance(healthy_deployments, dict):
+            if not is_region_allowed(
+                LiteLLM_Params(**healthy_deployments["litellm_params"]), allowed_region
+            ):
+                raise litellm.PermissionDeniedError(
+                    message=f"Deployment is not in allowed_model_region={allowed_region}",
+                    model=model,
+                    llm_provider="",
+                    response=httpx.Response(
+                        403,
+                        request=httpx.Request("POST", "http://litellm-router"),
+                    ),
+                )
+            return healthy_deployments
+        return [
+            deployment
+            for deployment in healthy_deployments
+            if is_region_allowed(
+                LiteLLM_Params(**deployment["litellm_params"]), allowed_region
+            )
+        ]
+
     def _pre_call_checks(  # noqa: PLR0915
         self,
         model: str,
@@ -10309,7 +10340,11 @@ class Router:
 
         # Optimized: Use list() shallow copy instead of deepcopy
         # We only pop from the list, not modify deployment dicts - 100x+ faster on hot path (every request)
-        _returned_deployments = list(healthy_deployments)
+        _returned_deployments = list(
+            self._filter_deployments_by_region(
+                model, healthy_deployments, request_kwargs
+            )
+        )
 
         invalid_model_indices = set()  # Use set for O(1) membership checks
 
@@ -10405,21 +10440,6 @@ class Router:
                     ):
                         invalid_model_indices.add(idx)
                         _rate_limit_error = True
-                        continue
-
-            ## REGION CHECK ##
-            if (
-                request_kwargs is not None
-                and request_kwargs.get("allowed_model_region") is not None
-            ):
-                allowed_model_region = request_kwargs.get("allowed_model_region")
-
-                if allowed_model_region is not None:
-                    if not is_region_allowed(
-                        litellm_params=LiteLLM_Params(**_litellm_params),
-                        allowed_model_region=allowed_model_region,
-                    ):
-                        invalid_model_indices.add(idx)
                         continue
 
             ## INVALID PARAMS ## -> catch 'gpt-3.5-turbo-16k' not supporting 'response_format' param
@@ -10816,6 +10836,10 @@ class Router:
             verbose_router_logger.debug(
                 f"healthy_deployments after web search filter: {healthy_deployments}"
             )
+        # Residency is an authorization constraint, not an optional token precheck.
+        healthy_deployments = self._filter_deployments_by_region(
+            model, healthy_deployments, request_kwargs
+        )
 
         if isinstance(healthy_deployments, dict):
             if (healthy_deployments.get("model_info") or {}).get("blocked") is True:
@@ -11254,6 +11278,9 @@ class Router:
             specific_deployment=specific_deployment,
             request_kwargs=request_kwargs,
         )
+        healthy_deployments = self._filter_deployments_by_region(
+            model, healthy_deployments, request_kwargs
+        )
 
         if isinstance(healthy_deployments, dict):
             if (healthy_deployments.get("model_info") or {}).get("blocked") is True:
@@ -11409,6 +11436,10 @@ class Router:
             messages=messages,
             input=input,
             specific_deployment=specific_deployment,
+            request_kwargs=request_kwargs,
+        )
+        healthy_deployments = self._filter_deployments_by_region(
+            model, healthy_deployments, request_kwargs
         )
 
         # 2. If the returned is a specific deployment (Dict), verify and return directly
