@@ -25,11 +25,12 @@ RUN apk add --no-cache \
     npm \
     libsndfile
 
+ARG UV_PYTHON_VERSION=3.13.13
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python \
-    UV_PYTHON_VERSION=3.13.13 \
     UV_PROJECT_ENVIRONMENT=/app/.venv \
     UV_LINK_MODE=copy \
     PATH="/app/.venv/bin:${PATH}"
+
 RUN uv python install --no-bin "$UV_PYTHON_VERSION"
 
 # Copy dependency metadata first for layer caching
@@ -87,7 +88,7 @@ ENV PATH="/app/.venv/bin:${PATH}"
 COPY --from=builder /app /app
 COPY --from=builder /opt/uv-python /opt/uv-python
 RUN /app/.venv/bin/python -c \
-    "import math, subprocess, sys; assert sys.version_info[:2] == (3, 13), sys.version; assert math.sqrt(4) == 2; subprocess.run([sys.executable, '-c', 'import math'], check=True)"
+    "import math, subprocess, sys; from pathlib import Path; assert sys.version_info[:2] == (3, 13), sys.version; assert sys.prefix == '/app/.venv', sys.prefix; assert Path(sys.base_prefix).is_relative_to('/opt/uv-python'), sys.base_prefix; assert math.sqrt(4) == 2; subprocess.run([sys.executable, '-c', 'import math'], check=True)"
 # Prisma binaries live in $HOME/.cache (default prisma-python location),
 # which is /root/.cache here. Copy only the Prisma subdirs — copying the
 # whole /root/.cache drags in the uv build cache (~660 MB, includes a
