@@ -130,19 +130,42 @@ class DecisionsHTTPDeadlineTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.backend_requests = []
         self.connections = set()
+        self.backend_arrivals = {
+            name: asyncio.Event()
+            for name in (
+                "decision-dz",
+                "decision-global",
+                "decision-concurrent",
+                "decision-fast",
+            )
+        }
+        self.backend_barriers = {}
         self.server = await asyncio.start_server(self.serve_azure, "127.0.0.1", 0)
         port = self.server.sockets[0].getsockname()[1]
         self.api_base = f"http://127.0.0.1:{port}/"
         self.http_handler = AsyncHTTPHandler(timeout=2)
         await self.http_handler.client.aclose()
-        self.backend_client = httpx.AsyncClient(timeout=2, trust_env=False)
+        self.outbound_requests = []
+        self.backend_client = httpx.AsyncClient(
+            timeout=2,
+            trust_env=False,
+            event_hooks={"request": [self.observe_outbound_request]},
+        )
         self.http_handler.client = self.backend_client
         self.router = litellm.Router(
             model_list=[
-                self.deployment("decision-dz", "decisions-model", 1, 0.15),
-                self.deployment("decision-global", "decisions-model", 2, 0.8),
-                self.deployment("decision-concurrent", "concurrent-model", 1, 0.8),
-                self.deployment("decision-fast", "fast-model", 1, 0.1),
+                self.deployment(
+                    "decision-dz", "decisions-model", 1, httpx.Timeout(10, read=0.15)
+                ),
+                self.deployment(
+                    "decision-global", "decisions-model", 2, httpx.Timeout(10)
+                ),
+                self.deployment(
+                    "decision-concurrent", "concurrent-model", 1, httpx.Timeout(10)
+                ),
+                self.deployment(
+                    "decision-fast", "fast-model", 1, httpx.Timeout(10, read=0.5)
+                ),
             ],
             routing_strategy="simple-shuffle",
             num_retries=0,
@@ -196,6 +219,18 @@ class DecisionsHTTPDeadlineTests(unittest.IsolatedAsyncioTestCase):
             },
         }
 
+    async def observe_outbound_request(self, request):
+        self.outbound_requests.append(
+            {
+                "model": json.loads(request.content)["model"],
+                "url": str(request.url),
+                "timeout": dict(request.extensions["timeout"]),
+                "timeout_extension": request.extensions["timeout"],
+                "shared_timeout": self.backend_client.timeout,
+                "shared_values": self.backend_client.timeout.as_dict(),
+            }
+        )
+
     async def serve_azure(self, reader, writer):
         task = asyncio.current_task()
         self.connections.add(task)
@@ -208,10 +243,12 @@ class DecisionsHTTPDeadlineTests(unittest.IsolatedAsyncioTestCase):
             )
             body = json.loads(await reader.readexactly(content_length))
             self.backend_requests.append((body["model"], time.monotonic()))
-            delay = {"decision-dz": 1.2, "decision-concurrent": 0.3}.get(
-                body["model"], 0
-            )
-            await asyncio.sleep(delay)
+            self.backend_arrivals[body["model"]].set()
+            barrier = self.backend_barriers.get(body["model"])
+            if barrier is not None:
+                await barrier.wait()
+            elif body["model"] == "decision-concurrent":
+                await asyncio.sleep(0.3)
             payload = json.dumps(
                 {
                     "model": body["model"],
@@ -251,31 +288,101 @@ class DecisionsHTTPDeadlineTests(unittest.IsolatedAsyncioTestCase):
     async def test_slow_datazone_times_out_and_global_fallback_preserves_concurrent_deadlines(
         self,
     ):
+        self.backend_client.timeout = httpx.Timeout(10, read=None)
         original_timeout = self.backend_client.timeout
         original_values = original_timeout.as_dict()
-        short_request = asyncio.create_task(self.request_decision("decisions-model"))
-        long_request = asyncio.create_task(self.request_decision("concurrent-model"))
-        fast_request = asyncio.create_task(self.request_decision("fast-model"))
-        await asyncio.sleep(0.05)
-        self.assertIs(self.backend_client.timeout, original_timeout)
-        self.assertEqual(self.backend_client.timeout.as_dict(), original_values)
-        short, long, fast = await asyncio.gather(
-            short_request, long_request, fast_request
-        )
-        self.assertEqual(short.status_code, 200, short.text)
-        self.assertEqual(short.json()["model"], "decision-global")
-        self.assertEqual(long.status_code, 200, long.text)
-        self.assertEqual(long.json()["model"], "decision-concurrent")
-        self.assertEqual(fast.status_code, 200, fast.text)
-        self.assertEqual(fast.json()["model"], "decision-fast")
-        starts = dict(self.backend_requests)
-        self.assertGreaterEqual(starts["decision-global"] - starts["decision-dz"], 0.12)
-        self.assertLess(starts["decision-global"] - starts["decision-dz"], 1.0)
-        self.assertIs(self.backend_client.timeout, original_timeout)
-        self.assertEqual(self.backend_client.timeout.as_dict(), original_values)
+        self.backend_barriers = {
+            name: asyncio.Event()
+            for name in ("decision-dz", "decision-global", "decision-concurrent")
+        }
+        requests = []
+        try:
+            long_request = asyncio.create_task(
+                self.request_decision("concurrent-model")
+            )
+            requests.append(long_request)
+            await asyncio.wait_for(
+                self.backend_arrivals["decision-concurrent"].wait(), timeout=10
+            )
+            self.assertIs(self.backend_client.timeout, original_timeout)
+            self.assertEqual(self.backend_client.timeout.as_dict(), original_values)
+            short_request = asyncio.create_task(
+                self.request_decision("decisions-model")
+            )
+            requests.append(short_request)
+            await asyncio.wait_for(
+                self.backend_arrivals["decision-dz"].wait(), timeout=10
+            )
+            self.assertIs(self.backend_client.timeout, original_timeout)
+            self.assertEqual(self.backend_client.timeout.as_dict(), original_values)
+            fast_request = asyncio.create_task(self.request_decision("fast-model"))
+            requests.append(fast_request)
+            fast = await asyncio.wait_for(asyncio.shield(fast_request), timeout=10)
+            self.assertEqual(
+                fast.status_code,
+                200,
+                f"{fast.text}; outbound={self.outbound_requests!r}",
+            )
+            self.assertEqual(fast.json()["model"], "decision-fast")
+            await asyncio.wait_for(
+                self.backend_arrivals["decision-global"].wait(), timeout=10
+            )
+            self.assertFalse(long_request.done())
+            self.assertIs(self.backend_client.timeout, original_timeout)
+            self.assertEqual(self.backend_client.timeout.as_dict(), original_values)
+            self.backend_barriers["decision-concurrent"].set()
+            self.backend_barriers["decision-global"].set()
+            short, long = await asyncio.wait_for(
+                asyncio.gather(short_request, long_request), timeout=10
+            )
+            self.assertEqual(short.status_code, 200, short.text)
+            self.assertEqual(short.json()["model"], "decision-global")
+            self.assertEqual(long.status_code, 200, long.text)
+            self.assertEqual(long.json()["model"], "decision-concurrent")
+            self.assertIs(self.backend_client.timeout, original_timeout)
+            self.assertEqual(self.backend_client.timeout.as_dict(), original_values)
+            expected_reads = {
+                "decision-dz": 0.15,
+                "decision-global": 10,
+                "decision-concurrent": 10,
+                "decision-fast": 0.5,
+            }
+            self.assertEqual(
+                {request["model"] for request in self.outbound_requests},
+                set(expected_reads),
+            )
+            for request in self.outbound_requests:
+                self.assertEqual(
+                    request["url"], f"{self.api_base}{AZURE_DECISIONS_ENDPOINT}"
+                )
+                self.assertEqual(
+                    request["timeout"]["read"], expected_reads[request["model"]]
+                )
+                self.assertEqual(request["timeout"]["connect"], 10)
+                self.assertIs(request["shared_timeout"], original_timeout)
+                self.assertEqual(request["shared_values"], original_values)
+            self.assertEqual(
+                len(
+                    {
+                        id(request["timeout_extension"])
+                        for request in self.outbound_requests
+                    }
+                ),
+                len(self.outbound_requests),
+            )
+        finally:
+            for request in requests:
+                if not request.done():
+                    request.cancel()
+            results = await asyncio.gather(*requests, return_exceptions=True)
+            for result in results:
+                if isinstance(result, BaseException) and not isinstance(
+                    result, asyncio.CancelledError
+                ):
+                    raise result
 
     async def test_absent_timeout_uses_shared_client_default(self):
-        self.backend_client.timeout = httpx.Timeout(0.05)
+        self.backend_client.timeout = httpx.Timeout(10, read=0.05)
         original_timeout = self.backend_client.timeout
         with self.assertRaises(BaseLLMException):
             await litellm.allm_passthrough_route(
@@ -299,7 +406,7 @@ class DecisionsHTTPDeadlineTests(unittest.IsolatedAsyncioTestCase):
                 num_retries=0,
                 retry_after=0,
             )
-        self.backend_client.timeout = httpx.Timeout(0.05)
+        self.backend_client.timeout = httpx.Timeout(10, read=0.05)
         original_timeout = self.backend_client.timeout
         try:
             with patch.object(proxy_server, "llm_router", router):
@@ -315,7 +422,7 @@ class DecisionsHTTPDeadlineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.backend_client.timeout.read, 0.05)
 
     async def test_httpx_timeout_override_does_not_change_shared_client_default(self):
-        self.backend_client.timeout = httpx.Timeout(0.05)
+        self.backend_client.timeout = httpx.Timeout(10, read=0.05)
         original_timeout = self.backend_client.timeout
         response = await litellm.allm_passthrough_route(
             method="POST",
@@ -325,7 +432,7 @@ class DecisionsHTTPDeadlineTests(unittest.IsolatedAsyncioTestCase):
             api_base=self.api_base,
             api_key="key-concurrent",
             json={"model": "decision-concurrent", "input": "test", "questions": []},
-            timeout=httpx.Timeout(0.8, connect=0.4),
+            timeout=httpx.Timeout(10, read=0.8),
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["model"], "decision-concurrent")

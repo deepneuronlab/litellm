@@ -9,6 +9,7 @@ import httpx
 import litellm
 from fastapi import HTTPException
 import test_decisions_endpoints as fixtures
+from litellm.litellm_core_utils.logging_worker import GLOBAL_LOGGING_WORKER
 from litellm.proxy.guardrails.guardrail_hooks.litellm_content_filter.content_filter import (
     ContentFilterGuardrail,
 )
@@ -33,13 +34,26 @@ class DecisionsPolicyRegressionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         try:
             current = asyncio.current_task()
-            while pending := asyncio.all_tasks() - self._baseline_tasks - {current}:
-                # A rejected during-call policy can leave the concurrent provider
-                # request running. Settle it and any logging children before closing
-                # its transport or restoring the patched process-wide HTTP client.
-                for task in pending:
-                    task.cancel()
-                await asyncio.gather(*pending, return_exceptions=True)
+            loop = asyncio.get_running_loop()
+            while True:
+                # The logging consumer is long-lived; drain its finite work through
+                # flush(), rather than cancelling wrappers holding unawaited coroutines.
+                pending = asyncio.all_tasks() - self._baseline_tasks - {current}
+                pending.discard(GLOBAL_LOGGING_WORKER._worker_task)
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+                    continue
+                if GLOBAL_LOGGING_WORKER._bound_loop is loop:
+                    await GLOBAL_LOGGING_WORKER.flush()
+                pending = asyncio.all_tasks() - self._baseline_tasks - {current}
+                pending.discard(GLOBAL_LOGGING_WORKER._worker_task)
+                if not pending:
+                    break
+            if (
+                GLOBAL_LOGGING_WORKER._bound_loop is loop
+                and GLOBAL_LOGGING_WORKER._worker_task not in self._baseline_tasks
+            ):
+                await GLOBAL_LOGGING_WORKER.stop()
         finally:
             await fixtures.NativeAzureDecisionsTests.asyncTearDown(self)
 
