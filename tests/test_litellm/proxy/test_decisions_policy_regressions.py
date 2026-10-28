@@ -6,9 +6,10 @@ import unittest
 from unittest.mock import patch
 
 import httpx
-import litellm
-from fastapi import HTTPException
 import test_decisions_endpoints as fixtures
+from fastapi import HTTPException
+
+import litellm
 from litellm.litellm_core_utils.logging_worker import GLOBAL_LOGGING_WORKER
 from litellm.proxy.guardrails.guardrail_hooks.litellm_content_filter.content_filter import (
     ContentFilterGuardrail,
@@ -166,7 +167,7 @@ class DecisionsPolicyRegressionTests(unittest.IsolatedAsyncioTestCase):
                             "name": "category",
                             "instructions": "Choose",
                             "choices": [
-                                {"name": "restricted", "description": "classified"}
+                                {"value": "restricted", "description": "classified"}
                             ],
                         }
                     ]
@@ -183,9 +184,14 @@ class DecisionsPolicyRegressionTests(unittest.IsolatedAsyncioTestCase):
         body["questions"] = [
             {
                 "type": "choice",
-                "name": "category",
+                "name": "classified-question",
                 "instructions": "Find classified",
-                "choices": [{"name": "restricted", "description": "classified option"}],
+                "choices": [
+                    {
+                        "value": "classified-choice",
+                        "description": "classified option",
+                    }
+                ],
             }
         ]
         response = await self.client.post("/v1/decisions", json=body)
@@ -197,7 +203,10 @@ class DecisionsPolicyRegressionTests(unittest.IsolatedAsyncioTestCase):
             sent["questions"][0]["choices"][0]["description"], "[REDACTED] option"
         )
         self.assertEqual(sent["questions"][0]["type"], "choice")
-        self.assertEqual(sent["questions"][0]["name"], "category")
+        self.assertEqual(sent["questions"][0]["name"], "classified-question")
+        self.assertEqual(
+            sent["questions"][0]["choices"][0]["value"], "classified-choice"
+        )
         self.assertEqual(response.json()["usage"], fixtures.AZURE_RESPONSE["usage"])
 
     async def test_actual_apply_guardrail_post_call_blocks_returned_answer(self):
@@ -212,32 +221,32 @@ class DecisionsPolicyRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("answers", response.json())
         self.assertEqual(len(self.azure_requests), 1)
 
-    async def test_actual_apply_guardrail_post_masks_answer_and_choice_not_probabilities(
-        self,
-    ):
+    async def test_actual_apply_guardrail_post_masks_text_not_schema_identifiers(self):
         self.use_virtual_principal()
         self.add_filter(GuardrailEventHooks.post_call, action="MASK")
         self.azure_payload["answers"] = [
             {
                 "type": "choice",
-                "name": "category",
+                "name": "classified-question",
+                "choice": "classified-choice",
+                "confidence": 0.95,
+                "probabilities": [{"value": "classified-choice", "probability": 0.95}],
                 "text": "classified answer",
-                "choices": [{"name": "classified option", "probability": 0.95}],
             }
         ]
         response = await self.client.post(
             "/v1/decisions", json=fixtures.DECISION_REQUEST
         )
         self.assertEqual(response.status_code, 200, response.text)
-        payload = response.json()
-        self.assertEqual(payload["answers"][0]["text"], "[REDACTED] answer")
-        self.assertEqual(
-            payload["answers"][0]["choices"][0]["name"], "[REDACTED] option"
-        )
-        self.assertEqual(payload["answers"][0]["choices"][0]["probability"], 0.95)
-        self.assertEqual(payload["answers"][0]["type"], "choice")
-        self.assertEqual(payload["usage"], self.azure_payload["usage"])
-        self.assertEqual(payload["model"], "decision-dz")
+        answer = response.json()["answers"][0]
+        self.assertEqual(answer["text"], "[REDACTED] answer")
+        self.assertEqual(answer["name"], "classified-question")
+        self.assertEqual(answer["choice"], "classified-choice")
+        self.assertEqual(answer["probabilities"][0]["value"], "classified-choice")
+        self.assertEqual(answer["probabilities"][0]["probability"], 0.95)
+        self.assertEqual(answer["type"], "choice")
+        self.assertEqual(response.json()["usage"], self.azure_payload["usage"])
+        self.assertEqual(response.json()["model"], "decision-dz")
 
     async def test_actual_apply_guardrail_during_call_can_reject(self):
         self.use_virtual_principal()
@@ -305,6 +314,30 @@ class DecisionsPolicyRegressionTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(response.status_code, 400, response.text)
                 self.assertIn(expected_error, response.text)
+                self.assertFalse(self.azure_requests)
+
+    async def test_malformed_dynamic_guardrail_configuration_returns_typed_400(self):
+        self.use_virtual_principal()
+        self.add_filter(GuardrailEventHooks.pre_call, default_on=False)
+        for configuration in (
+            None,
+            [],
+            {"extra_body": None},
+            {"extra_body": []},
+        ):
+            with self.subTest(configuration=configuration):
+                response = await self.client.post(
+                    "/v1/decisions",
+                    json=dict(
+                        fixtures.DECISION_REQUEST,
+                        guardrails=[{"decisions-content-policy": configuration}],
+                    ),
+                )
+                self.assertEqual(response.status_code, 400, response.text)
+                self.assertEqual(
+                    response.json()["error"]["type"], "invalid_request_error"
+                )
+                self.assertEqual(response.json()["error"]["param"], "guardrails")
                 self.assertFalse(self.azure_requests)
 
     async def test_selected_policy_rejects_unsupported_multimodal_input(self):

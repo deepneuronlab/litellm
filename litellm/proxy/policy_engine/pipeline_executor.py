@@ -41,6 +41,7 @@ class PipelineExecutor:
         user_api_key_dict: Any,
         call_type: str,
         policy_name: str,
+        metadata_variable_name: str = "metadata",
     ) -> PipelineExecutionResult:
         """
         Execute pipeline steps sequentially with conditional actions.
@@ -52,14 +53,17 @@ class PipelineExecutor:
             user_api_key_dict: User API key auth
             call_type: Type of call (completion, etc.)
             policy_name: Name of the owning policy (for logging)
+            metadata_variable_name: Proxy metadata field used by the policy engine.
 
         Returns:
             PipelineExecutionResult with terminal action and step results
         """
         step_results: List[PipelineStepResult] = []
         working_data = data.copy()
-        if "metadata" in working_data:
-            working_data["metadata"] = working_data["metadata"].copy()
+        for metadata_key in ("metadata", "litellm_metadata"):
+            metadata = working_data.get(metadata_key)
+            if isinstance(metadata, dict):
+                working_data[metadata_key] = metadata.copy()
 
         for i, step in enumerate(steps):
             start_time = time.perf_counter()
@@ -70,6 +74,7 @@ class PipelineExecutor:
                 data=working_data,
                 user_api_key_dict=user_api_key_dict,
                 call_type=call_type,
+                metadata_variable_name=metadata_variable_name,
             )
 
             duration = time.perf_counter() - start_time
@@ -134,16 +139,8 @@ class PipelineExecutor:
         data: dict,
         user_api_key_dict: Any,
         call_type: str,
+        metadata_variable_name: str = "metadata",
     ) -> tuple:
-        """
-        Run a single pipeline step's guardrail.
-
-        Returns:
-            Tuple of (outcome, modified_data, error_detail) where:
-            - outcome: "pass", "fail", or "error"
-            - modified_data: dict if guardrail returned modified data, else None
-            - error_detail: error message string if fail/error, else None
-        """
         callback = PipelineExecutor._find_guardrail_callback(step.guardrail)
         if callback is None:
             verbose_proxy_logger.warning(
@@ -151,13 +148,17 @@ class PipelineExecutor:
             )
             return ("error", None, f"Guardrail '{step.guardrail}' not found")
 
+        metadata_present = metadata_variable_name in data
+        original_metadata = data.get(metadata_variable_name)
+        metadata_is_dict = isinstance(original_metadata, dict)
+        metadata = original_metadata if metadata_is_dict else {}
+        if not metadata_is_dict:
+            data[metadata_variable_name] = metadata
+        had_guardrails = "guardrails" in metadata
+        original_guardrails = metadata.get("guardrails")
+        metadata["guardrails"] = [step.guardrail]
+        response = None
         try:
-            # Inject guardrail name into metadata so should_run_guardrail() allows it
-            if "metadata" not in data:
-                data["metadata"] = {}
-            data["metadata"]["guardrails"] = [step.guardrail]
-
-            # Use unified_guardrail path if callback implements apply_guardrail
             target: CustomLogger = callback
             use_unified = "apply_guardrail" in type(callback).__dict__
             if use_unified:
@@ -180,21 +181,35 @@ class PipelineExecutor:
             else:
                 return ("error", None, f"Unsupported pipeline mode: {mode}")
 
-            # Normal return means pass
-            modified_data = None
-            if response is not None and isinstance(response, dict):
-                modified_data = response
+            modified_data = response if isinstance(response, dict) else None
             return ("pass", modified_data, None)
-
         except Exception as e:
             if CustomGuardrail._is_guardrail_intervention(e):
                 error_msg = _extract_error_message(e)
                 return ("fail", None, error_msg)
-            else:
-                verbose_proxy_logger.error(
-                    f"Pipeline: unexpected error from guardrail '{step.guardrail}': {e}"
-                )
-                return ("error", None, str(e))
+            verbose_proxy_logger.error(
+                f"Pipeline: unexpected error from guardrail '{step.guardrail}': {e}"
+            )
+            return ("error", None, str(e))
+        finally:
+            for target_data in (
+                data,
+                response if isinstance(response, dict) else None,
+            ):
+                if not isinstance(target_data, dict):
+                    continue
+                target_metadata = target_data.get(metadata_variable_name)
+                if not isinstance(target_metadata, dict):
+                    continue
+                if had_guardrails:
+                    target_metadata["guardrails"] = original_guardrails
+                else:
+                    target_metadata.pop("guardrails", None)
+            if not metadata_is_dict:
+                if metadata_present:
+                    data[metadata_variable_name] = original_metadata
+                else:
+                    data.pop(metadata_variable_name, None)
 
     @staticmethod
     def _find_guardrail_callback(guardrail_name: str) -> Optional[CustomGuardrail]:

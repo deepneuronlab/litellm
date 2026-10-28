@@ -9,23 +9,60 @@ from litellm.integrations.custom_guardrail import CustomGuardrail
 from litellm.llms.base_llm.guardrail_translation.base_translation import BaseTranslation
 from litellm.types.utils import GenericGuardrailAPIInputs
 
+_DECISIONS_TEXT_FIELDS = frozenset(
+    {
+        "input",
+        "content",
+        "instructions",
+        "description",
+        "text",
+        "refusal",
+        "arguments",
+        "output",
+    }
+)
+
 
 class AzureDecisionsHandler(BaseTranslation):
     @staticmethod
     def _collect_texts(
-        value: Union[dict, list], texts: List[str], locations: List[Tuple[Any, Any]]
+        value: Union[dict, list],
+        texts: List[str],
+        locations: List[Tuple[Any, Any]],
+        field_name: Any = None,
     ) -> None:
-        items = value.items() if isinstance(value, dict) else enumerate(value)
-        for key, item in items:
-            if isinstance(value, dict) and key == "type" and not isinstance(item, str):
-                raise HTTPException(400, "Unsupported Decisions discriminator shape")
-            if isinstance(item, str):
-                texts.append(item)
-                locations.append((value, key))
-            elif isinstance(item, (dict, list)):
-                AzureDecisionsHandler._collect_texts(item, texts, locations)
-            elif item is not None and not isinstance(item, (bool, int, float)):
-                raise HTTPException(400, "Unsupported Decisions guardrail content")
+        if isinstance(value, str):
+            return
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == "type" and not isinstance(item, str):
+                    raise HTTPException(
+                        400, "Unsupported Decisions discriminator shape"
+                    )
+                if isinstance(item, str):
+                    if key in _DECISIONS_TEXT_FIELDS:
+                        texts.append(item)
+                        locations.append((value, key))
+                elif isinstance(item, (dict, list)):
+                    AzureDecisionsHandler._collect_texts(
+                        item, texts, locations, field_name=key
+                    )
+                elif item is not None and not isinstance(item, (bool, int, float)):
+                    raise HTTPException(400, "Unsupported Decisions guardrail content")
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                if isinstance(item, str):
+                    if field_name in _DECISIONS_TEXT_FIELDS:
+                        texts.append(item)
+                        locations.append((value, index))
+                elif isinstance(item, (dict, list)):
+                    AzureDecisionsHandler._collect_texts(
+                        item, texts, locations, field_name=field_name
+                    )
+                elif item is not None and not isinstance(item, (bool, int, float)):
+                    raise HTTPException(400, "Unsupported Decisions guardrail content")
+        elif value is not None and not isinstance(value, (bool, int, float)):
+            raise HTTPException(400, "Unsupported Decisions guardrail content")
 
     async def _apply_texts(
         self,
@@ -64,11 +101,6 @@ class AzureDecisionsHandler(BaseTranslation):
             for (container, key), text in zip(locations, replacements)
         )
         for (container, key), text in zip(locations, replacements):
-            # A policy may reject schema strings, but cannot change wire discriminators.
-            if isinstance(container, dict) and key == "type" and container[key] != text:
-                raise HTTPException(
-                    400, "A Decisions guardrail cannot rewrite a discriminator"
-                )
             container[key] = text
         return changed
 

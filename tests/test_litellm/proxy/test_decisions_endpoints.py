@@ -10,8 +10,9 @@ from unittest.mock import patch
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
 import httpx
-import litellm
 from fastapi import HTTPException
+
+import litellm
 from litellm.integrations.custom_guardrail import CustomGuardrail
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
@@ -141,6 +142,7 @@ class NativeAzureDecisionsTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.azure_requests = []
         self.azure_errors = {}
+        self.azure_response_headers = {}
         self.backend_client = httpx.AsyncClient(
             transport=httpx.MockTransport(self.azure_response)
         )
@@ -226,7 +228,11 @@ class NativeAzureDecisionsTests(unittest.IsolatedAsyncioTestCase):
                     }
                 },
             )
-        return httpx.Response(200, json=dict(AZURE_RESPONSE, model=body["model"]))
+        return httpx.Response(
+            200,
+            json=dict(AZURE_RESPONSE, model=body["model"]),
+            headers=self.azure_response_headers,
+        )
 
     async def test_every_sdk_path_reaches_azure_v1_decisions(self):
         for path in DECISIONS_PATHS:
@@ -249,14 +255,50 @@ class NativeAzureDecisionsTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertIn("x-litellm-call-id", response.headers)
 
-    async def test_explicit_stream_false_remains_a_json_response(self):
+    async def test_explicit_stream_false_and_proxy_controls_stay_out_of_provider_body(
+        self,
+    ):
         response = await self.client.post(
-            "/v1/decisions", json=dict(DECISION_REQUEST, stream=False)
+            "/v1/decisions",
+            json=dict(
+                DECISION_REQUEST,
+                stream=False,
+                endpoint="hostile-path",
+                callbacks=["hostile-callback"],
+                custom_llm_provider="openai",
+            ),
         )
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["answers"], AZURE_RESPONSE["answers"])
-        self.assertIs(self.azure_requests[0][2]["stream"], False)
         self.assertIn("application/json", response.headers["content-type"])
+        sent = self.azure_requests[0][2]
+        self.assertEqual(sent["model"], "decision-dz")
+        for field in (
+            "stream",
+            "endpoint",
+            "callbacks",
+            "custom_llm_provider",
+        ):
+            self.assertNotIn(field, sent)
+
+    async def test_upstream_response_headers_are_forwarded_and_entity_headers_rebuilt(
+        self,
+    ):
+        self.azure_response_headers = {
+            "x-ms-request-id": "azure-request-id",
+            "x-ratelimit-remaining-requests": "9",
+            "content-encoding": "identity",
+            "content-length": "1",
+        }
+        response = await self.client.post("/v1/decisions", json=DECISION_REQUEST)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers["x-ms-request-id"], "azure-request-id")
+        self.assertEqual(response.headers["x-ratelimit-remaining-requests"], "9")
+        self.assertNotIn("content-encoding", response.headers)
+        self.assertEqual(
+            int(response.headers["content-length"]),
+            len(response.content),
+        )
 
     async def test_pre_call_policy_rejects_before_any_provider_call(self):
         principal = self.use_virtual_principal()

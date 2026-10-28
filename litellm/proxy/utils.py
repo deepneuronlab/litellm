@@ -1287,6 +1287,19 @@ class ProxyLogging:
                         request_data=data, guardrail_name=guardrail_name
                     )
 
+    @staticmethod
+    def _get_proxy_metadata(data):
+        request_context = data.get("proxy_server_request")
+        metadata_variable_name = (
+            request_context.get("metadata_variable_name")
+            if isinstance(request_context, dict)
+            else None
+        )
+        if metadata_variable_name not in ("metadata", "litellm_metadata"):
+            metadata_variable_name = "metadata"
+        metadata = data.get(metadata_variable_name)
+        return metadata_variable_name, metadata if isinstance(metadata, dict) else {}
+
     async def _maybe_execute_pipelines(
         self,
         data: dict,
@@ -1302,7 +1315,7 @@ class ProxyLogging:
 
         Returns the (possibly modified) data dict.
         """
-        metadata = data.get("metadata", data.get("litellm_metadata", {})) or {}
+        metadata_variable_name, metadata = self._get_proxy_metadata(data)
         pipelines = metadata.get("_guardrail_pipelines")
         if not pipelines:
             return data
@@ -1318,6 +1331,7 @@ class ProxyLogging:
                 user_api_key_dict=user_api_key_dict,
                 call_type=call_type,
                 policy_name=policy_name,
+                metadata_variable_name=metadata_variable_name,
             )
 
             data = self._handle_pipeline_result(
@@ -1448,7 +1462,7 @@ class ProxyLogging:
             )
 
             # Get pipeline-managed guardrails to skip in normal loop
-            metadata = data.get("metadata", data.get("litellm_metadata", {})) or {}
+            _, metadata = self._get_proxy_metadata(data)
             pipeline_managed: set = metadata.get("_pipeline_managed_guardrails", set())
 
             caps = ProxyLogging._callback_capabilities()

@@ -4,13 +4,17 @@ import copy
 import unittest
 from unittest.mock import patch
 
-import litellm
+import httpx
 import test_decisions_endpoints as transport_fixtures
 import test_decisions_policy_regressions as policy_fixtures
+
+import litellm
 from litellm.proxy import proxy_server
 from litellm.proxy.guardrails.guardrail_hooks.litellm_content_filter.content_filter import (
     ContentFilterGuardrail,
 )
+from litellm.proxy.policy_engine.attachment_registry import AttachmentRegistry
+from litellm.proxy.policy_engine.policy_registry import PolicyRegistry
 from litellm.types.guardrails import GuardrailEventHooks
 
 
@@ -84,6 +88,158 @@ class DecisionsPolicyCompositionTests(unittest.IsolatedAsyncioTestCase):
         return self.use_virtual_principal(
             **{field: {"guardrails": [policy.guardrail_name]}}
         )
+
+    async def post_with_route_edge(self, edge, body):
+        if edge == "root_path":
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(
+                    app=proxy_server.app, root_path="/gateway"
+                ),
+                base_url="http://gateway",
+                headers=self.client.headers,
+            ) as client:
+                return await client.post("/gateway/v1/decisions", json=body)
+        return await self.client.post(
+            "/v1/decisions",
+            json=body,
+            headers={"host": "localhost/?x=1"},
+        )
+
+    async def assert_route_edge_blocks(self, edge, body, policy, scan_count):
+        self.azure_requests.clear()
+        response = await self.post_with_route_edge(edge, body)
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("blocked", response.text.lower())
+        self.assertEqual(len(policy.scans), scan_count)
+        self.assertFalse(self.azure_requests)
+
+    def admin_pipeline_fixture(self):
+        policy = self.add_policy(
+            "admin-pipeline-filter",
+            GuardrailEventHooks.pre_call,
+            default_on=False,
+        )
+        policies = PolicyRegistry()
+        policies.load_policies(
+            {
+                "admin-decisions-policy": {
+                    "pipeline": {
+                        "mode": "pre_call",
+                        "steps": [
+                            {
+                                "guardrail": policy.guardrail_name,
+                                "on_fail": "block",
+                                "on_pass": "allow",
+                            }
+                        ],
+                    }
+                }
+            }
+        )
+        attachments = AttachmentRegistry()
+        attachments.load_attachments(
+            [{"policy": "admin-decisions-policy", "scope": "*"}]
+        )
+        return policy, policies, attachments
+
+    async def assert_admin_pipeline_blocks(self, metadata, policy, scan_count):
+        self.azure_requests.clear()
+        body = dict(
+            transport_fixtures.DECISION_REQUEST,
+            input="classified admin request",
+        )
+        if metadata is not None:
+            body["metadata"] = metadata
+        response = await self.client.post("/v1/decisions", json=body)
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(len(policy.scans), scan_count)
+        self.assertIn("classified admin request", policy.scans[-1]["texts"])
+        self.assertFalse(self.azure_requests)
+
+    async def test_required_policy_uses_canonical_route_for_root_path_and_host_mismatch(
+        self,
+    ):
+        policy = self.add_policy("required-asgi-route", GuardrailEventHooks.pre_call)
+        self.attach("team", policy)
+        body = dict(transport_fixtures.DECISION_REQUEST, input="classified request")
+        for scan_count, edge in enumerate(("root_path", "host_mismatch"), start=1):
+            with self.subTest(edge=edge):
+                await self.assert_route_edge_blocks(edge, body, policy, scan_count)
+
+    async def test_selected_deployment_policy_uses_canonical_route_for_root_path_and_host_mismatch(
+        self,
+    ):
+        self.use_virtual_principal()
+        policy = self.add_policy("selected-asgi-route", GuardrailEventHooks.pre_call)
+        self.use_router(
+            litellm.Router(
+                model_list=[self.model("selected", [policy.guardrail_name])],
+                num_retries=0,
+                retry_after=0,
+            )
+        )
+        body = dict(transport_fixtures.DECISION_REQUEST, input="classified request")
+        for scan_count, edge in enumerate(("root_path", "host_mismatch"), start=1):
+            with self.subTest(edge=edge):
+                await self.assert_route_edge_blocks(edge, body, policy, scan_count)
+
+    async def test_admin_pipeline_blocks_with_provider_metadata_present_or_absent(
+        self,
+    ):
+        self.use_virtual_principal()
+        policy, policies, attachments = self.admin_pipeline_fixture()
+        with (
+            patch(
+                "litellm.proxy.policy_engine.policy_registry.get_policy_registry",
+                return_value=policies,
+            ),
+            patch(
+                "litellm.proxy.policy_engine.attachment_registry.get_attachment_registry",
+                return_value=attachments,
+            ),
+        ):
+            for scan_count, metadata in enumerate(
+                (None, {}, {"document_id": "invoice-123"}), start=1
+            ):
+                with self.subTest(metadata=metadata):
+                    await self.assert_admin_pipeline_blocks(
+                        metadata, policy, scan_count
+                    )
+
+    async def test_admin_pipeline_controls_are_not_sent_to_azure(self):
+        self.use_virtual_principal()
+        policy, policies, attachments = self.admin_pipeline_fixture()
+        with (
+            patch(
+                "litellm.proxy.policy_engine.policy_registry.get_policy_registry",
+                return_value=policies,
+            ),
+            patch(
+                "litellm.proxy.policy_engine.attachment_registry.get_attachment_registry",
+                return_value=attachments,
+            ),
+        ):
+            metadata = {"document_id": "invoice-123"}
+            response = await self.client.post(
+                "/v1/decisions",
+                json=dict(
+                    transport_fixtures.DECISION_REQUEST,
+                    input="safe request",
+                    metadata=metadata,
+                ),
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(len(policy.scans), 1)
+            sent = self.azure_requests[0][2]
+            self.assertEqual(sent["metadata"], metadata)
+            self.assertNotIn("litellm_metadata", sent)
+            for field in (
+                "guardrails",
+                "_guardrail_pipelines",
+                "_pipeline_managed_guardrails",
+            ):
+                self.assertNotIn(field, sent)
+                self.assertNotIn(field, sent["metadata"])
 
     async def test_provider_metadata_cannot_shadow_key_team_or_project_policies(self):
         for owner in ("key", "team", "project"):

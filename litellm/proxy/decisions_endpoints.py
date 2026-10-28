@@ -24,6 +24,18 @@ _AZURE_HTTP_ERRORS = {
     502: litellm.BadGatewayError,
     503: litellm.ServiceUnavailableError,
 }
+_AZURE_DECISIONS_PROXY_FIELDS = frozenset(
+    {
+        "litellm_metadata",
+        "guardrails",
+        "stream",
+        "api_key",
+        "api_base",
+        "endpoint",
+        "callbacks",
+        "custom_llm_provider",
+    }
+)
 
 
 def _invalid_request(message: str, param: str) -> ProxyException:
@@ -119,6 +131,26 @@ async def _adecisions(
         ) from e
 
 
+def _validate_selected_guardrail(name, parameters, configured, dynamic):
+    if dynamic:
+        if not isinstance(parameters, dict):
+            raise _invalid_request(
+                "dynamic guardrail configuration must be an object",
+                "guardrails",
+            )
+        if not isinstance(parameters.get("extra_body", {}), dict):
+            raise _invalid_request(
+                "dynamic guardrail extra_body must be an object",
+                "guardrails",
+            )
+    if not isinstance(name, str):
+        raise _invalid_request("guardrail names must be strings", "guardrails")
+    if name not in configured:
+        raise _invalid_request(
+            f"Unknown guardrail for the Decisions API: {name!r}", "guardrails"
+        )
+
+
 def _validate_selected_guardrails(data: dict) -> None:
     selected = CustomGuardrail().get_guardrail_from_metadata(data)
     if not isinstance(selected, list):
@@ -129,14 +161,11 @@ def _validate_selected_guardrails(data: dict) -> None:
         if isinstance(callback, CustomGuardrail)
     }
     for selection in selected:
-        names = selection if isinstance(selection, dict) else [selection]
-        for name in names:
-            if not isinstance(name, str):
-                raise _invalid_request("guardrail names must be strings", "guardrails")
-            if name not in configured:
-                raise _invalid_request(
-                    f"Unknown guardrail for the Decisions API: {name!r}", "guardrails"
-                )
+        if isinstance(selection, dict):
+            for name, parameters in selection.items():
+                _validate_selected_guardrail(name, parameters, configured, True)
+        else:
+            _validate_selected_guardrail(selection, None, configured, False)
 
 
 async def route_decisions_request(data: dict, llm_router: Optional[Router]):
@@ -235,7 +264,7 @@ async def decisions(
         "json": {
             key: value
             for key, value in body.items()
-            if key not in ("litellm_metadata", "guardrails")
+            if key not in _AZURE_DECISIONS_PROXY_FIELDS
         },
         "litellm_metadata": body.get("litellm_metadata") or {},
     }
@@ -255,10 +284,17 @@ async def decisions(
             proxy_config=proxy_config,
             version=version,
         )
+        from litellm.proxy.pass_through_endpoints.pass_through_endpoints import (
+            HttpPassThroughEndpointHelpers,
+        )
+
         return Response(
             content=response.content,
             status_code=response.status_code,
-            headers=dict(fastapi_response.headers),
+            headers=HttpPassThroughEndpointHelpers.get_response_headers(
+                headers=response.headers,
+                custom_headers=dict(fastapi_response.headers),
+            ),
             media_type=response.headers.get("content-type", "application/json"),
         )
     except Exception as e:

@@ -326,7 +326,9 @@ def _strip_client_pricing_overrides(data: Dict[str, Any]) -> None:
         )
 
 
-def _get_metadata_variable_name(request: Request) -> str:
+def _get_metadata_variable_name(
+    request: Request, request_route: str | None = None
+) -> str:
     """
     Helper to return what the "metadata" field should be called in the request data
 
@@ -334,10 +336,12 @@ def _get_metadata_variable_name(request: Request) -> str:
 
     For ALL other endpoints we call this "metadata"
     """
-    # Inline imports — auth_utils/route_checks participate in a proxy import cycle.
-    from litellm.proxy.auth.auth_utils import get_request_route  # noqa: PLC0415
+    if request_route is None:
+        # Inline imports — auth_utils/route_checks participate in a proxy import cycle.
+        from litellm.proxy.auth.auth_utils import get_request_route
 
-    path = get_request_route(request)
+        request_route = get_request_route(request)
+    path = request_route
     if "thread" in path or "assistant" in path:
         return "litellm_metadata"
 
@@ -1397,9 +1401,15 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
     # in after the admin-injection strip below so the audit / spend-tracking
     # consumers of proxy_server_request["body"] see the cleaned metadata
     # rather than attacker-forged user_api_key_* fields.
+    from litellm.proxy.auth.auth_utils import get_request_route
+
+    request_route = get_request_route(request)
+    _metadata_variable_name = _get_metadata_variable_name(request, request_route)
     arrival_time = time.time()
     data["proxy_server_request"] = {
         "url": str(request.url),
+        "route": request_route,
+        "metadata_variable_name": _metadata_variable_name,
         "method": request.method,
         "headers": _headers,
         "body": None,  # filled in post-strip; see below
@@ -1407,7 +1417,6 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
     }
 
     safe_add_api_version_from_query_params(data, request)
-    _metadata_variable_name = _get_metadata_variable_name(request)
     if data.get(_metadata_variable_name, None) is None:
         data[_metadata_variable_name] = {}
 
