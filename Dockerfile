@@ -20,6 +20,7 @@ RUN apk add --no-cache \
     bash \
     gcc \
     libatomic \
+    openssl \
     openssl-dev \
     nodejs \
     npm \
