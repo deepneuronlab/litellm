@@ -9,6 +9,7 @@ match a single path segment when resolving call types for a concrete path.
 """
 
 from typing import List, Optional
+from urllib.parse import urlsplit
 
 from litellm.types.utils import API_ROUTE_TO_CALL_TYPES, CallTypes
 
@@ -50,6 +51,18 @@ def get_call_types_for_route(route: str) -> Optional[List[CallTypes]]:
         if _route_matches_pattern(route, pattern):
             return call_types
     return None
+
+
+def is_native_decisions_request(data: dict) -> bool:
+    """Recognize Decisions using the proxy's server-generated request URL."""
+    request_url = (data.get("proxy_server_request") or {}).get("url")
+    if not isinstance(request_url, str):
+        return False
+    route_call_types = get_call_types_for_route(urlsplit(request_url).path) or []
+    return (
+        CallTypes.adecisions in route_call_types
+        and data.get("endpoint") == "openai/v1/decisions"
+    )
 
 
 def get_routes_for_call_type(call_type: CallTypes) -> list:

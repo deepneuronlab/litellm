@@ -292,16 +292,19 @@ class DecisionsPolicyRegressionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unknown_selected_guardrail_fails_closed(self):
         self.use_virtual_principal()
-        for selection in (
-            {"guardrails": ["missing-policy"]},
-            {"metadata": {"guardrails": ["missing-policy"]}},
+        for selection, expected_error in (
+            ({"guardrails": ["missing-policy"]}, "Unknown guardrail"),
+            (
+                {"metadata": {"guardrails": ["missing-policy"]}},
+                "metadata.guardrails is reserved",
+            ),
         ):
             with self.subTest(selection=selection):
                 response = await self.client.post(
                     "/v1/decisions", json=dict(fixtures.DECISION_REQUEST, **selection)
                 )
                 self.assertEqual(response.status_code, 400, response.text)
-                self.assertIn("Unknown guardrail", response.text)
+                self.assertIn(expected_error, response.text)
                 self.assertFalse(self.azure_requests)
 
     async def test_selected_policy_rejects_unsupported_multimodal_input(self):

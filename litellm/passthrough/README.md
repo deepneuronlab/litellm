@@ -125,6 +125,17 @@ and choices, and returned answer strings. Policies may reject or mask content;
 numeric probabilities and usage are not rewritten. Unknown selected policies,
 unsupported policy content shapes, and invalid text translations fail closed.
 
+Select optional request policies through top-level `guardrails`. Provider
+`metadata.guardrails` and `metadata.guardrail_config` are reserved and rejected
+with HTTP 400; provider metadata cannot replace required key/team/project
+policies. Other non-reserved provider metadata remains request data.
+
+Each selected deployment also enforces its own configured input/output
+policies, including on fallback attempts. Guarded attempts use independent
+payload copies so one deployment's redaction cannot alter a later attempt.
+Required request/global policies remain in the proxy lifecycle rather than
+being scanned twice at deployment boundaries.
+
 Router deployment ordering, retry policies, and fallbacks apply, including
 DataZone order 1 followed by Global order 2 when configured. Authenticated
 regional restrictions remain enforced through fallback, including non-chat

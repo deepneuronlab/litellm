@@ -35,6 +35,9 @@ from litellm.constants import (
     LITELLM_LOGGING_NO_UPSTREAM_LLM_CALL,
     MAX_TEAM_LIST_LIMIT,
 )
+from litellm.litellm_core_utils.api_route_to_call_types import (
+    is_native_decisions_request,
+)
 from litellm.proxy._types import (
     DB_CONNECTION_ERROR_TYPES,
     CommonProxyErrors,
@@ -5699,6 +5702,10 @@ def _check_and_merge_model_level_guardrails(
     Returns:
         Modified data dict with merged guardrails (if any model-level guardrails exist)
     """
+    # Native Decisions deployment policies run at each SDK deployment boundary.
+    # Its provider metadata is wire data, never a source of routing/policy IDs.
+    if is_native_decisions_request(data):
+        return data
     if llm_router is None:
         return data
 

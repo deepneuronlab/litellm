@@ -1,3 +1,4 @@
+import copy
 from typing import Optional
 
 import httpx
@@ -40,6 +41,13 @@ async def _validate_decisions_request(request: Request) -> dict:
     for field in ("metadata", "litellm_metadata"):
         if data.get(field) is not None and not isinstance(data[field], dict):
             raise _invalid_request(f"{field} must be a JSON object", field)
+    provider_metadata = data.get("metadata") or {}
+    for field in ("guardrails", "guardrail_config"):
+        if field in provider_metadata:
+            raise _invalid_request(
+                f"metadata.{field} is reserved; select policies with top-level guardrails",
+                f"metadata.{field}",
+            )
     if not isinstance(data.get("model"), str) or not data["model"]:
         raise _invalid_request(
             "A router model is required for the Decisions API", "model"
@@ -55,6 +63,13 @@ router = APIRouter(dependencies=[Depends(_validate_decisions_request)])
 async def _adecisions(
     *, model: str, json: dict, custom_llm_provider: Optional[str] = None, **kwargs
 ):
+    deployment_guardrails = kwargs.get("guardrails")
+    if deployment_guardrails is not None:
+        _validate_selected_guardrails({"guardrails": deployment_guardrails})
+        # Native deployment hooks may redact nested questions. Each attempt must
+        # start from the proxy-approved payload, not a prior deployment's mutations.
+        if deployment_guardrails:
+            json = copy.deepcopy(json)
     deployment_team = (kwargs.get("model_info") or {}).get("team_id")
     request_team = (kwargs.get("litellm_metadata") or {}).get("user_api_key_team_id")
     if deployment_team is not None and deployment_team != request_team:
@@ -104,11 +119,8 @@ async def _adecisions(
         ) from e
 
 
-def _validate_selected_guardrails(data: dict, llm_router: Router) -> None:
-    from litellm.proxy.utils import _check_and_merge_model_level_guardrails
-
-    guardrail_data = _check_and_merge_model_level_guardrails(data, llm_router)
-    selected = CustomGuardrail().get_guardrail_from_metadata(guardrail_data)
+def _validate_selected_guardrails(data: dict) -> None:
+    selected = CustomGuardrail().get_guardrail_from_metadata(data)
     if not isinstance(selected, list):
         raise _invalid_request("guardrails must be a list", "guardrails")
     configured = {
@@ -136,7 +148,7 @@ async def route_decisions_request(data: dict, llm_router: Optional[Router]):
     team_id = (data.get("litellm_metadata") or {}).get("user_api_key_team_id")
     team_model = llm_router.map_team_model(model, team_id) if team_id else None
     model = team_model or model
-    _validate_selected_guardrails(data, llm_router)
+    _validate_selected_guardrails(data)
     if not isinstance(model, str) or (
         team_model is None
         and model not in llm_router.model_names

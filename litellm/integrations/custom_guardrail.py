@@ -16,6 +16,9 @@ from litellm._logging import verbose_logger
 from litellm.litellm_core_utils.core_helpers import redact_nested_match_and_regex_keys
 from litellm.caching import DualCache
 from litellm.integrations.custom_logger import CustomLogger
+from litellm.litellm_core_utils.api_route_to_call_types import (
+    is_native_decisions_request,
+)
 from litellm.types.guardrails import (
     DynamicGuardrailParams,
     GuardrailEventHooks,
@@ -336,6 +339,24 @@ class CustomGuardrail(CustomLogger):
             return kwargs
 
         if (
+            call_type == CallTypes.allm_passthrough_route
+            and is_native_decisions_request(kwargs)
+        ):
+            from litellm.proxy.guardrails.guardrail_hooks.unified_guardrail.unified_guardrail import (
+                apply_decisions_deployment_guardrail,
+            )
+
+            for event_type in (
+                GuardrailEventHooks.pre_call,
+                GuardrailEventHooks.during_call,
+            ):
+                if self.should_run_guardrail(kwargs, event_type):
+                    kwargs = await apply_decisions_deployment_guardrail(
+                        self, kwargs, event_type
+                    )
+            return kwargs
+
+        if (
             self.should_run_guardrail(
                 data=kwargs, event_type=GuardrailEventHooks.pre_call
             )
@@ -388,6 +409,18 @@ class CustomGuardrail(CustomLogger):
             is not True
         ):
             return response
+
+        if (
+            call_type == CallTypes.allm_passthrough_route
+            and is_native_decisions_request(request_data)
+        ):
+            from litellm.proxy.guardrails.guardrail_hooks.unified_guardrail.unified_guardrail import (
+                apply_decisions_deployment_guardrail,
+            )
+
+            return await apply_decisions_deployment_guardrail(
+                self, request_data, GuardrailEventHooks.post_call, response
+            )
 
         # CHECK IF GUARDRAIL REJECTS THE REQUEST
         result = await self.async_post_call_success_hook(

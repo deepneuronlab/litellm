@@ -41,9 +41,14 @@ class AzureDecisionsHandler(BaseTranslation):
         inputs = GenericGuardrailAPIInputs(texts=texts)
         if request_data.get("model"):
             inputs["model"] = request_data["model"]
+        # Azure's metadata is provider data. Scanner annotations belong in the
+        # shared canonical proxy bucket, not in the JSON sent to Azure.
+        guardrail_context = {
+            key: value for key, value in request_data.items() if key != "metadata"
+        }
         result = await guardrail.apply_guardrail(
             inputs=inputs,
-            request_data=request_data,
+            request_data=guardrail_context,
             input_type=input_type,
             logging_obj=logging_obj,
         )

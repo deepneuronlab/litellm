@@ -1288,10 +1288,18 @@ async def async_post_call_success_deployment_hook(
     """
     Allow modifying / reviewing the response just after it's received from the deployment.
     """
+    from litellm.litellm_core_utils.api_route_to_call_types import (
+        is_native_decisions_request,
+    )
+
     try:
         typed_call_type = CallTypes(call_type)
     except ValueError:
         typed_call_type = None  # unknown call type
+    chain_deployment_policies = (
+        typed_call_type == CallTypes.allm_passthrough_route
+        and is_native_decisions_request(request_data)
+    )
 
     CustomLogger = _get_cached_custom_logger()
     for callback in litellm.callbacks:
@@ -1300,7 +1308,9 @@ async def async_post_call_success_deployment_hook(
                 request_data, cast(LLMResponseTypes, response), typed_call_type
             )
             if result is not None:
-                return result
+                if not chain_deployment_policies:
+                    return result
+                response = result
 
     return response
 
