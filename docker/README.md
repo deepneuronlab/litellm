@@ -7,6 +7,10 @@ This guide provides instructions for building and running the LiteLLM applicatio
 - Docker
 - Docker Compose
 
+The root production `Dockerfile` installs Python 3.13 in both stages and passes
+its absolute interpreter path to `uv`. A generic `--python python3` request can
+select a managed Python 3.14 interpreter, outside this project's `<3.14` bound.
+
 ## Building and Running the Application
 
 To build and run the application, you will use the `docker-compose.yml` file located in the root of the project. This file is configured to use the `Dockerfile.non_root` for a secure, non-root container environment.

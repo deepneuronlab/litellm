@@ -19,8 +19,8 @@ COPY --from=uvbin /uvx /usr/local/bin/uvx
 RUN apk add --no-cache \
     bash \
     gcc \
-    python3 \
-    python3-dev \
+    python-3.13 \
+    python-3.13-dev \
     openssl \
     openssl-dev \
     nodejs \
@@ -42,7 +42,7 @@ RUN uv sync --frozen --no-install-project --no-install-workspace --no-default-gr
     --extra proxy-runtime \
     --extra extra_proxy \
     --extra semantic-router \
-    --python python3
+    --python /usr/bin/python3.13
 
 # Copy full source tree
 COPY . .
@@ -56,7 +56,7 @@ RUN uv sync --frozen --no-default-groups --no-editable \
     --extra proxy-runtime \
     --extra extra_proxy \
     --extra semantic-router \
-    --python python3
+    --python /usr/bin/python3.13
 
 RUN prisma generate --schema=./schema.prisma
 
@@ -68,7 +68,7 @@ FROM $LITELLM_RUNTIME_IMAGE AS runtime
 
 USER root
 
-RUN apk add --no-cache bash openssl tzdata nodejs npm python3 libsndfile && \
+RUN apk add --no-cache bash openssl tzdata nodejs npm python-3.13 libsndfile && \
     npm install -g npm@11.14.0 tar@7.5.11 glob@13.0.6 @isaacs/brace-expansion@5.0.1 brace-expansion@5.0.5 minimatch@10.2.4 diff@8.0.3 picomatch@4.0.4 && \
     GLOBAL="$(npm root -g)" && \
     for pkg in tar glob @isaacs/brace-expansion brace-expansion minimatch diff picomatch; do \
