@@ -167,17 +167,22 @@ class DecisionsHTTPDeadlineTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def asyncTearDown(self):
+        self.server.close()
+        connections = list(self.connections)
+        for connection in connections:
+            connection.cancel()
+        results = await asyncio.gather(*connections, return_exceptions=True)
+        await self.server.wait_closed()
         await self.client.aclose()
         await self.backend_client.aclose()
         self.router.reset()
         for item in reversed(self.patches):
             item.stop()
-        self.server.close()
-        await self.server.wait_closed()
-        connections = list(self.connections)
-        for connection in connections:
-            connection.cancel()
-        await asyncio.gather(*connections, return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException) and not isinstance(
+                result, asyncio.CancelledError
+            ):
+                raise result
 
     def deployment(self, name, model_name, order, timeout):
         return {

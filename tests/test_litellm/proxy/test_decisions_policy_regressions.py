@@ -1,5 +1,6 @@
 """Real proxy/Router policy regressions with only the Azure HTTP transport replaced."""
 
+import asyncio
 import copy
 import unittest
 from unittest.mock import patch
@@ -20,14 +21,27 @@ from litellm.types.utils import CredentialItem
 
 class DecisionsPolicyRegressionTests(unittest.IsolatedAsyncioTestCase):
     # Reuse the existing HTTP fixture without inheriting/rerunning its 17 tests.
-    asyncTearDown = fixtures.NativeAzureDecisionsTests.asyncTearDown
     make_router = fixtures.NativeAzureDecisionsTests.make_router
     use_router = fixtures.NativeAzureDecisionsTests.use_router
     use_virtual_principal = fixtures.NativeAzureDecisionsTests.use_virtual_principal
 
     async def asyncSetUp(self):
+        self._baseline_tasks = asyncio.all_tasks()
         self.azure_payload = copy.deepcopy(fixtures.AZURE_RESPONSE)
         await fixtures.NativeAzureDecisionsTests.asyncSetUp(self)
+
+    async def asyncTearDown(self):
+        try:
+            current = asyncio.current_task()
+            while pending := asyncio.all_tasks() - self._baseline_tasks - {current}:
+                # A rejected during-call policy can leave the concurrent provider
+                # request running. Settle it and any logging children before closing
+                # its transport or restoring the patched process-wide HTTP client.
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+        finally:
+            await fixtures.NativeAzureDecisionsTests.asyncTearDown(self)
 
     def azure_response(self, request):
         response = fixtures.NativeAzureDecisionsTests.azure_response(self, request)
