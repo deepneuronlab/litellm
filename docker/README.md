@@ -7,6 +7,12 @@ This guide provides instructions for building and running the LiteLLM applicatio
 - Docker
 - Docker Compose
 
+The root production `Dockerfile` installs pinned uv-managed Python 3.13 in the
+builder and copies its runtime prefix into the final image. Both `uv sync`
+steps use that interpreter, and the image build verifies its version and
+standard-library imports in the runtime stage. An unqualified `--python python3`
+request can select managed Python 3.14, outside this project's `<3.14` bound.
+
 ## Building and Running the Application
 
 To build and run the application, you will use the `docker-compose.yml` file located in the root of the project. This file is configured to use the `Dockerfile.non_root` for a secure, non-root container environment.

@@ -19,17 +19,20 @@ COPY --from=uvbin /uvx /usr/local/bin/uvx
 RUN apk add --no-cache \
     bash \
     gcc \
-    python3 \
-    python3-dev \
+    libatomic \
     openssl \
     openssl-dev \
     nodejs \
     npm \
     libsndfile
 
-ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
+ARG UV_PYTHON_VERSION=3.13.13
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python \
+    UV_PROJECT_ENVIRONMENT=/app/.venv \
     UV_LINK_MODE=copy \
     PATH="/app/.venv/bin:${PATH}"
+
+RUN uv python install --no-bin "$UV_PYTHON_VERSION"
 
 # Copy dependency metadata first for layer caching
 COPY pyproject.toml uv.lock ./
@@ -42,7 +45,7 @@ RUN uv sync --frozen --no-install-project --no-install-workspace --no-default-gr
     --extra proxy-runtime \
     --extra extra_proxy \
     --extra semantic-router \
-    --python python3
+    --python "$(uv python find "$UV_PYTHON_VERSION")"
 
 # Copy full source tree
 COPY . .
@@ -56,7 +59,7 @@ RUN uv sync --frozen --no-default-groups --no-editable \
     --extra proxy-runtime \
     --extra extra_proxy \
     --extra semantic-router \
-    --python python3
+    --python "$(uv python find "$UV_PYTHON_VERSION")"
 
 RUN prisma generate --schema=./schema.prisma
 
@@ -68,7 +71,7 @@ FROM $LITELLM_RUNTIME_IMAGE AS runtime
 
 USER root
 
-RUN apk add --no-cache bash openssl tzdata nodejs npm python3 libsndfile && \
+RUN apk add --no-cache bash openssl tzdata nodejs npm libsndfile libatomic && \
     npm install -g npm@11.14.0 tar@7.5.11 glob@13.0.6 @isaacs/brace-expansion@5.0.1 brace-expansion@5.0.5 minimatch@10.2.4 diff@8.0.3 picomatch@4.0.4 && \
     GLOBAL="$(npm root -g)" && \
     for pkg in tar glob @isaacs/brace-expansion brace-expansion minimatch diff picomatch; do \
@@ -84,6 +87,9 @@ WORKDIR /app
 ENV PATH="/app/.venv/bin:${PATH}"
 
 COPY --from=builder /app /app
+COPY --from=builder /opt/uv-python /opt/uv-python
+RUN /app/.venv/bin/python -c \
+    "import math, subprocess, sys; from pathlib import Path; assert sys.version_info[:2] == (3, 13), sys.version; assert sys.prefix == '/app/.venv', sys.prefix; assert Path(sys.base_prefix).is_relative_to('/opt/uv-python'), sys.base_prefix; assert math.sqrt(4) == 2; subprocess.run([sys.executable, '-c', 'import math'], check=True)"
 # Prisma binaries live in $HOME/.cache (default prisma-python location),
 # which is /root/.cache here. Copy only the Prisma subdirs — copying the
 # whole /root/.cache drags in the uv build cache (~660 MB, includes a
