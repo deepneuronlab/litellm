@@ -127,6 +127,12 @@ unchanged. Input/output token usage is included in LiteLLM's standard success
 logging payload, and Azure HTTP error statuses are preserved for routing and
 the client.
 
+The underlying passthrough failure callbacks still receive raw
+`httpx.HTTPStatusError` before the endpoint maps it to a status-aware exception.
+As in the previous overlay, this can leave failure metric statuses unset and
+does not establish per-deployment cooldown behavior. Order fallback and client
+error statuses are covered separately by the regression suite.
+
 Implementation and regression tests belong to this fork, not an infrastructure
 image-layer patch. Build the native source using this repository's root
 `Dockerfile`. Image build/publication remains an explicit manual operation:
