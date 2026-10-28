@@ -422,22 +422,61 @@ class DecisionsHTTPDeadlineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.backend_client.timeout.read, 0.05)
 
     async def test_httpx_timeout_override_does_not_change_shared_client_default(self):
-        self.backend_client.timeout = httpx.Timeout(10, read=0.05)
+        self.backend_client.timeout = httpx.Timeout(10, read=0)
         original_timeout = self.backend_client.timeout
-        response = await litellm.allm_passthrough_route(
-            method="POST",
-            endpoint=AZURE_DECISIONS_ENDPOINT,
-            model="decision-concurrent",
-            custom_llm_provider="azure",
-            api_base=self.api_base,
-            api_key="key-concurrent",
-            json={"model": "decision-concurrent", "input": "test", "questions": []},
-            timeout=httpx.Timeout(10, read=0.8),
-        )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["model"], "decision-concurrent")
+        self.backend_barriers["decision-concurrent"] = asyncio.Event()
+        with self.assertRaises(BaseLLMException):
+            await asyncio.wait_for(
+                litellm.allm_passthrough_route(
+                    method="POST",
+                    endpoint=AZURE_DECISIONS_ENDPOINT,
+                    model="decision-concurrent",
+                    custom_llm_provider="azure",
+                    api_base=self.api_base,
+                    api_key="key-concurrent",
+                    json={
+                        "model": "decision-concurrent",
+                        "input": "test",
+                        "questions": [],
+                    },
+                ),
+                timeout=10,
+            )
         self.assertIs(self.backend_client.timeout, original_timeout)
-        self.assertEqual(self.backend_client.timeout.read, 0.05)
+        self.assertEqual(self.outbound_requests[-1]["timeout"]["read"], 0)
+        try:
+            response = await asyncio.wait_for(
+                litellm.allm_passthrough_route(
+                    method="POST",
+                    endpoint=AZURE_DECISIONS_ENDPOINT,
+                    model="decision-fast",
+                    custom_llm_provider="azure",
+                    api_base=self.api_base,
+                    api_key="key-fast",
+                    json={"model": "decision-fast", "input": "test", "questions": []},
+                    timeout=httpx.Timeout(10, read=None),
+                ),
+                timeout=10,
+            )
+        except BaseLLMException as exc:
+            raise AssertionError(
+                f"Explicit timeout override failed; outbound={self.outbound_requests!r}"
+            ) from exc
+        self.assertEqual(
+            response.status_code, 200, f"outbound={self.outbound_requests!r}"
+        )
+        self.assertEqual(response.json()["model"], "decision-fast")
+        self.assertIs(self.backend_client.timeout, original_timeout)
+        self.assertEqual(self.backend_client.timeout.read, 0)
+        self.assertIsNone(self.outbound_requests[-1]["timeout"]["read"])
+        for request in self.outbound_requests:
+            self.assertEqual(
+                request["url"],
+                f"{self.api_base}{AZURE_DECISIONS_ENDPOINT}",
+                f"outbound={self.outbound_requests!r}",
+            )
+            self.assertIs(request["shared_timeout"], original_timeout)
+            self.assertEqual(request["shared_values"]["read"], 0)
 
 
 if __name__ == "__main__":
