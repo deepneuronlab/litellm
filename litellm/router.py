@@ -8987,9 +8987,14 @@ class Router:
 
         ## SET MODEL TO 'model=' - if base_model is None + not azure
         if custom_llm_provider == "azure" and base_model is None:
-            verbose_router_logger.error(
-                f"Could not identify azure model '{_model}'. Set azure 'base_model' for accurate max tokens, cost tracking, etc.- https://docs.litellm.ai/docs/proxy/cost_tracking#spend-tracking-for-azure-openai-models"
-            )
+            # `gpt5_series/` is a LiteLLM routing selector, not part of the model name.
+            # Strip it for metadata only; the Azure request path is built elsewhere.
+            if _model.startswith("gpt5_series/"):
+                model = _model.removeprefix("gpt5_series/")
+            else:
+                verbose_router_logger.error(
+                    f"Could not identify azure model '{_model}'. Set azure 'base_model' for accurate max tokens, cost tracking, etc.- https://docs.litellm.ai/docs/proxy/cost_tracking#spend-tracking-for-azure-openai-models"
+                )
         elif custom_llm_provider != "azure":
             model = _model
 
