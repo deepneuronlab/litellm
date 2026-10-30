@@ -3284,6 +3284,8 @@ def _get_builtin_model_info_for_registration(model: str, custom_llm_provider: st
 
 
 _runtime_registered_model_cost: Final[dict[str, dict[str, object]]] = {}  # mutable-ok: replayed on reload
+
+
 class _RegisteredPricingFields:
     """Explicitly registered rates per cost-map key, tied to the ``litellm.model_cost`` object they were
     registered on so a replaced catalog starts without them, as the entries they describe do."""
