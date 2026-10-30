@@ -483,6 +483,10 @@ class BaseDecisionsConfig(ABC):
     def provider_reported_cost(self, response: DecisionsIRResponse) -> float | None:
         return None
 
+    def pricing_model(self, response: DecisionsIRResponse, model: str) -> str:
+        """The model name cost tracking prices this response against."""
+        return model
+
     def missing_api_base_message(self, custom_llm_provider: str) -> str:
         return f"api_base is required for Decisions provider '{custom_llm_provider}'"
 

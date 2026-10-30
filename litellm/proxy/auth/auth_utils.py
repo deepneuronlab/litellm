@@ -775,6 +775,207 @@ def route_in_additonal_public_routes(current_route: str):
         return False
 
 
+# Frozen allowlist, never derived from LiteLLMRoutes: upstream keeps adding routes to
+# openai_routes/anthropic_routes (e.g. Claude Code plugin marketplace, /utils/model_info),
+# and each would silently become unauthenticated on upgrade. Base set: openai_routes +
+# anthropic_routes + google_routes exactly as reviewed on v1.88.1 (SRE-749), which already
+# includes files, batches, fine_tuning, assistants, threads, vector_stores, search and
+# containers. Additions since then are listed separately and widened only with review.
+_DNL_NARROW_DATA_PLANE_ROUTES: Final[tuple[str, ...]] = (
+    *(
+        "/engines/{model}/chat/completions",
+        "/openai/deployments/{model}/chat/completions",
+        "/chat/completions",
+        "/v1/chat/completions",
+        "/cursor/chat/completions",
+        "/engines/{model}/completions",
+        "/openai/deployments/{model}/completions",
+        "/completions",
+        "/v1/completions",
+        "/engines/{model}/embeddings",
+        "/openai/deployments/{model}/embeddings",
+        "/embeddings",
+        "/v1/embeddings",
+        "/images/generations",
+        "/v1/images/generations",
+        "/images/edits",
+        "/v1/images/edits",
+        "/videos",
+        "/v1/videos",
+        "/videos/{video_id}",
+        "/v1/videos/{video_id}",
+        "/videos/{video_id}/content",
+        "/v1/videos/{video_id}/content",
+        "/videos/{video_id}/remix",
+        "/v1/videos/{video_id}/remix",
+        "/audio/transcriptions",
+        "/v1/audio/transcriptions",
+        "/audio/speech",
+        "/v1/audio/speech",
+        "/moderations",
+        "/v1/moderations",
+        "/v1/batches",
+        "/batches",
+        "/v1/batches/{batch_id}",
+        "/batches/{batch_id}",
+        "/v1/batches/{batch_id}/cancel",
+        "/batches/{batch_id}/cancel",
+        "/v1/files",
+        "/files",
+        "/v1/files/{file_id}",
+        "/files/{file_id}",
+        "/v1/files/{file_id}/content",
+        "/files/{file_id}/content",
+        "/fine_tuning/jobs",
+        "/v1/fine_tuning/jobs",
+        "/fine_tuning/jobs/{fine_tuning_job_id}/cancel",
+        "/v1/fine_tuning/jobs/{fine_tuning_job_id}/cancel",
+        "/assistants",
+        "/v1/assistants",
+        "/v1/assistants/{assistant_id}",
+        "/assistants/{assistant_id}",
+        "/threads",
+        "/v1/threads",
+        "/threads/{thread_id}",
+        "/v1/threads/{thread_id}",
+        "/threads/{thread_id}/messages",
+        "/v1/threads/{thread_id}/messages",
+        "/threads/{thread_id}/runs",
+        "/v1/threads/{thread_id}/runs",
+        "/models",
+        "/v1/models",
+        "/utils/token_counter",
+        "/utils/transform_request",
+        "/rerank",
+        "/v1/rerank",
+        "/v2/rerank",
+        "/realtime",
+        "/v1/realtime",
+        "/openai/v1/realtime",
+        "/realtime?{model}",
+        "/v1/realtime?{model}",
+        "/openai/v1/realtime?{model}",
+        "/responses",
+        "/v1/responses",
+        "/responses/{response_id}",
+        "/v1/responses/{response_id}",
+        "/responses/{response_id}/input_items",
+        "/v1/responses/{response_id}/input_items",
+        "/responses/{response_id}/cancel",
+        "/v1/responses/{response_id}/cancel",
+        "/vector_stores",
+        "/v1/vector_stores",
+        "/vector_stores/{vector_store_id}/search",
+        "/v1/vector_stores/{vector_store_id}/search",
+        "/vector_stores/{vector_store_id}/files",
+        "/v1/vector_stores/{vector_store_id}/files",
+        "/vector_stores/{vector_store_id}/files/{file_id}",
+        "/v1/vector_stores/{vector_store_id}/files/{file_id}",
+        "/vector_stores/{vector_store_id}/files/{file_id}/content",
+        "/v1/vector_stores/{vector_store_id}/files/{file_id}/content",
+        "/vector_store/list",
+        "/v1/vector_store/list",
+        "/search",
+        "/v1/search",
+        "/search/{search_tool_name}",
+        "/v1/search/{search_tool_name}",
+        "/ocr",
+        "/v1/ocr",
+        "/containers",
+        "/v1/containers",
+        "/containers/*",
+        "/v1/containers/*",
+        "/v1/messages",
+        "/v1/messages/count_tokens",
+        "/v1/skills",
+        "/v1/skills/{skill_id}",
+        "/v1beta/models/{model_name:path}:countTokens",
+        "/v1beta/models/{model_name:path}:generateContent",
+        "/v1beta/models/{model_name:path}:streamGenerateContent",
+        "/models/{model_name:path}:countTokens",
+        "/models/{model_name:path}:generateContent",
+        "/models/{model_name:path}:streamGenerateContent",
+        "/interactions",
+        "/v1beta/interactions",
+        "/interactions/{interaction_id}",
+        "/v1beta/interactions/{interaction_id}",
+        "/interactions/{interaction_id}/cancel",
+        "/v1beta/interactions/{interaction_id}/cancel",
+        "/v1beta/agents",
+        "/v1beta/agents/{name}",
+        "/v1beta/agents/{name}/versions",
+    ),
+    # v1.106.6 port (SRE-796): Responses aliases and the Decisions API.
+    *(
+        "/openai/responses",
+        "/openai/v1/responses",
+        "/openai/v1/responses/{response_id}",
+        "/openai/v1/responses/{response_id}/input_items",
+        "/openai/v1/responses/{response_id}/cancel",
+        "/responses/input_tokens",
+        "/v1/responses/input_tokens",
+        "/openai/v1/responses/input_tokens",
+        "/openai/responses/{response_id}",
+        "/openai/responses/{response_id}/input_items",
+        "/openai/responses/{response_id}/cancel",
+        "/openai/responses/input_tokens",
+        "/decisions",
+        "/v1/decisions",
+        "/openai/v1/decisions",
+        "/openai/decisions",
+    ),
+)
+
+
+def dnl_route_is_unauthenticated_data_plane(route: str, general_settings: Mapping[str, object] | None) -> bool:
+    """DNL fork addition. general_settings.dnl_unauthenticated_llm_routes lets
+    a configured master_key gate only the Admin UI/management API while
+    LLM-serving (data-plane) routes stay unauthenticated. Off by default --
+    upstream behavior is unchanged when the flag is unset.
+
+    Called identically from _user_api_key_auth_builder (grants the bare
+    token) and _run_centralized_common_checks (skips budget/team checks for
+    it) in user_api_key_auth.py -- one shared predicate, not two
+    independently-derived conditions, so the two sites cannot disagree.
+
+    Scope is the frozen _DNL_NARROW_DATA_PLANE_ROUTES allowlist (chat/completions,
+    embeddings, responses, decisions, moderations, audio, rerank, realtime,
+    /v1/models, messages, images, videos, batches, files, fine_tuning,
+    assistants, threads, vector_stores, search, ocr, containers, ...),
+    matched via RouteChecks.check_route_access, which handles
+    exact, "prefix*" wildcard, and "{param}" template routes -- a plain
+    `route in (...)` test would silently miss parameterized routes like
+    "/responses/{response_id}", since get_request_route() returns the
+    concrete request path, never the route template.
+
+    Deliberately does NOT offer a broader opt-in (e.g. MCP tool-call, agent
+    invocation, or RAG ingest/query routes): keep the exposed surface fixed
+    to what DNL's current callers actually use. Widen
+    _DNL_NARROW_DATA_PLANE_ROUTES explicitly, with review, if that changes.
+
+    Hard off whenever JWT, OAuth2, OAuth2-proxy, or a custom auth function is
+    configured, so a request actually authenticated via one of those for the
+    same route always still gets full common_checks/budget enforcement --
+    this flag only ever narrows the bare master-key requirement.
+    """
+    if not general_settings or not general_settings.get("dnl_unauthenticated_llm_routes", False):
+        return False
+    if (
+        general_settings.get("enable_jwt_auth", False)
+        or general_settings.get("enable_oauth2_auth", False)
+        or general_settings.get("enable_oauth2_proxy_auth", False)
+    ):
+        return False
+    from litellm.proxy.proxy_server import user_custom_auth
+
+    if user_custom_auth is not None:
+        return False
+
+    from litellm.proxy.auth.route_checks import RouteChecks
+
+    return RouteChecks.check_route_access(route=route, allowed_routes=_DNL_NARROW_DATA_PLANE_ROUTES)
+
+
 def get_request_route(request: Request) -> str:
     """
     Resolve the request route from the ASGI scope, with ``root_path`` stripped.
@@ -862,9 +1063,9 @@ def normalize_request_route(route: str) -> str:
         (r"^(/(?:openai/)?v1/responses)/([^/]+)(/input_items)$", r"\1/{response_id}\3"),
         (r"^(/(?:openai/)?v1/responses)/([^/]+)(/cancel)$", r"\1/{response_id}\3"),
         (r"^(/(?:openai/)?v1/responses)/([^/]+)$", r"\1/{response_id}"),
-        (r"^(/responses)/([^/]+)(/input_items)$", r"\1/{response_id}\3"),
-        (r"^(/responses)/([^/]+)(/cancel)$", r"\1/{response_id}\3"),
-        (r"^(/responses)/([^/]+)$", r"\1/{response_id}"),
+        (r"^(/(?:openai/)?responses)/([^/]+)(/input_items)$", r"\1/{response_id}\3"),
+        (r"^(/(?:openai/)?responses)/([^/]+)(/cancel)$", r"\1/{response_id}\3"),
+        (r"^(/(?:openai/)?responses)/([^/]+)$", r"\1/{response_id}"),
         # Threads API
         (
             r"^(/(?:openai/)?v1/threads)/([^/]+)(/runs)/([^/]+)(/steps)/([^/]+)$",

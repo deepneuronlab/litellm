@@ -20677,6 +20677,9 @@ app.include_router(tracing_endpoints.router)
 app.include_router(image_router)
 app.include_router(fine_tuning_router)
 app.include_router(credential_router)
+# DNL fork: Decisions routes load ahead of /openai/{endpoint:path} so /openai/v1/decisions
+# reaches the native handler instead of the OpenAI pass-through.
+reserve_lazy_slot(app, "decisions")
 app.include_router(openai_passthrough_router)
 app.include_router(batches_router)
 app.include_router(openai_files_router)

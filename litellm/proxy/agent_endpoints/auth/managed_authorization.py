@@ -37,6 +37,10 @@ _MANAGED_MODEL_ROUTES: Final = frozenset(
 ) | frozenset(
     (
         "/openai/v1/responses",
+        # DNL fork: Azure OpenAI SDK aliases of the native Responses and Decisions handlers.
+        "/openai/responses",
+        "/openai/v1/decisions",
+        "/openai/decisions",
         "/v2/rerank",
         "/claude_code_gateway/v1/messages",
         "/claude_code_gateway/v1/messages/count_tokens",

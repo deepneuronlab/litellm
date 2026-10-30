@@ -38,6 +38,7 @@ TOKEN_COUNTING_ROUTES: Final = (
     "/responses/input_tokens",
     "/v1/responses/input_tokens",
     "/openai/v1/responses/input_tokens",
+    "/openai/responses/input_tokens",
     "/utils/token_counter",
     "/v1/messages/count_tokens",
     "/v1beta/models/gemini-3.8-flash:countTokens",
