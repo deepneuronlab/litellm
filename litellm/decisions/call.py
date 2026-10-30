@@ -676,11 +676,12 @@ def _request_body(call: DecisionsCall) -> Mapping[str, object]:
 def _format_response(response: DecisionsIRResponse, call: DecisionsCall) -> DecisionsResponse | OpenAIDecisionResponse:
     formatted: Final = _formatted_response(response, call)
     provider_cost: Final = call.provider_config.provider_reported_cost(response)
+    pricing_model: Final = call.provider_config.pricing_model(response, call.model)
     formatted.set_hidden_params(
         {
             "model": f"{call.custom_llm_provider}/{call.model}",
             "custom_llm_provider": call.custom_llm_provider,
-            "provider_response_model": f"{call.custom_llm_provider}/{call.model}",
+            "provider_response_model": f"{call.custom_llm_provider}/{pricing_model}",
             **({"additional_headers": {RESPONSE_COST_HEADER: provider_cost}} if provider_cost is not None else {}),
         }
     )

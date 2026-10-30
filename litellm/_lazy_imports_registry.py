@@ -168,6 +168,7 @@ LLM_CONFIG_NAMES: Final = (
     "HostedVLLMDecisionsConfig",
     "OpenAIDecisionsConfig",
     "AzureAIDecisionsConfig",
+    "AzureOpenAIDecisionsConfig",
     "NvidiaNimRerankConfig",
     "NvidiaNimRankingConfig",
     "VertexAIRerankConfig",
@@ -737,6 +738,7 @@ _LLM_CONFIGS_IMPORT_MAP: Final = {
     ),
     "OpenAIDecisionsConfig": (".llms.openai.decisions.transformation", "OpenAIDecisionsConfig"),
     "AzureAIDecisionsConfig": (".llms.azure_ai.decisions.transformation", "AzureAIDecisionsConfig"),
+    "AzureOpenAIDecisionsConfig": (".llms.azure.decisions.transformation", "AzureOpenAIDecisionsConfig"),
     "NvidiaNimRerankConfig": (
         ".llms.nvidia_nim.rerank.transformation",
         "NvidiaNimRerankConfig",

@@ -217,6 +217,22 @@ async def systemone(
     )
 
 
+# DNL fork: Azure OpenAI SDK clients pointed at the gateway post to /openai/v1/decisions (older SDKs
+# /openai/decisions?api-version=...). Same handler and wire format; the query string is not forwarded.
+@router.post(
+    "/openai/v1/decisions",
+    dependencies=[Depends(user_api_key_auth)],
+    response_class=ORJSONResponse,  # pyright: ignore[reportDeprecated]  # required endpoint contract
+    tags=["decisions"],
+    include_in_schema=False,
+)
+@router.post(
+    "/openai/decisions",
+    dependencies=[Depends(user_api_key_auth)],
+    response_class=ORJSONResponse,  # pyright: ignore[reportDeprecated]  # required endpoint contract
+    tags=["decisions"],
+    include_in_schema=False,
+)
 @router.post(
     "/v1/decisions",
     dependencies=[Depends(user_api_key_auth)],
