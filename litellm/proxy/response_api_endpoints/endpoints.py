@@ -204,7 +204,7 @@ async def _resolve_cursor_model_variant_before_auth(request: Request) -> None:
     "/openai/responses",
     dependencies=[Depends(user_api_key_auth)],
     tags=["responses"],
-    responses=RESPONSES_API_CREATE_RESPONSE_SCHEMAS,
+    include_in_schema=False,
 )
 @router.post(
     "/v1/responses",
