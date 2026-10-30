@@ -67,9 +67,23 @@ class UnauthenticatedDataPlanePredicateTests(unittest.TestCase):
         self.addCleanup(self.patch.stop)
 
     def test_parameterized_and_alias_serving_routes_match(self):
-        for route in ("/responses/resp_123", "/openai/responses", "/openai/v1/decisions", "/v1/embeddings"):
+        for route in (
+            "/responses/resp_123",
+            "/openai/responses",
+            "/openai/responses/resp_123",
+            "/openai/responses/resp_123/input_items",
+            "/openai/responses/resp_123/cancel",
+            "/openai/responses/input_tokens",
+            "/openai/v1/decisions",
+            "/v1/embeddings",
+        ):
             with self.subTest(route=route):
                 self.assertTrue(dnl_route_is_unauthenticated_data_plane(route, FLAG_ON))
+
+    def test_unlisted_openai_alias_paths_stay_authenticated(self):
+        for route in ("/openai/responses/resp_123/extra", "/openai/responses/resp_123/input_items/x", "/openai/other"):
+            with self.subTest(route=route):
+                self.assertFalse(dnl_route_is_unauthenticated_data_plane(route, FLAG_ON))
 
     def test_upstream_route_list_growth_does_not_widen_the_allowlist(self):
         added_upstream = [
