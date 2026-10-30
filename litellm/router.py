@@ -11186,11 +11186,11 @@ class Router:
         if custom_llm_provider == "azure" and base_model is None:
             # `gpt5_series/` is a LiteLLM routing selector, not part of the model name.
             # Strip it for metadata only; the Azure request path is built elsewhere.
-            _metadata_model = _model.removeprefix("gpt5_series/")
+            _metadata_model: Final = _model.removeprefix("gpt5_series/")
             # Router init auto-registers every deployment name into
             # litellm.model_cost as a zeroed stub, so membership alone can't
             # tell a resolvable name apart; require usable limits/costs.
-            _azure_fallback_key = (
+            _azure_fallback_key: Final = (
                 _metadata_model if _metadata_model.startswith("azure/") else f"azure/{_metadata_model}"
             )
             _fallback_entry = litellm.model_cost.get(_azure_fallback_key)

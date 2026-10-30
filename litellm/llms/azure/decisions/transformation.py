@@ -42,7 +42,9 @@ class AzureOpenAIDecisionsConfig(OpenAIDecisionsConfig):
         # Deployment names (gpt-6-luna-dz) are not cost-map keys; Azure reports the underlying model.
         return response.model or model
 
-    def validate_environment(self, headers: Mapping[str, str], model: str, api_key: str | None) -> dict[str, str]:
+    def validate_environment(
+        self, headers: Mapping[str, str], model: str, api_key: str | None
+    ) -> dict[str, str]:  # mutable-ok: matches the BaseDecisionsConfig.validate_environment contract
         forwarded: Final = {name: value for name, value in headers.items() if name.lower() not in _CALLER_AUTH_HEADERS}
         return {
             **super().validate_environment(forwarded, model, None),

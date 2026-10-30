@@ -50,6 +50,7 @@ AZURE_RESPONSE = {
 class NativeAzureResponsesTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.azure_requests = []
+        self.azure_lifecycle = []
         self.azure_status = 200
         self.backend_client = httpx.AsyncClient(transport=httpx.MockTransport(self.azure_response))
         self.http_handler = AsyncHTTPHandler(timeout=3)
@@ -100,7 +101,19 @@ class NativeAzureResponsesTests(unittest.IsolatedAsyncioTestCase):
         for item in reversed(self.patches):
             item.stop()
 
+    def azure_lifecycle_response(self, request):
+        self.azure_lifecycle.append((request.method, request.url.path))
+        response_id = request.url.path.split("/")[3]
+        if request.method == "DELETE":
+            return httpx.Response(200, json={"id": response_id, "object": "response", "deleted": True})
+        if request.url.path.endswith("/input_items"):
+            return httpx.Response(200, json={"object": "list", "data": [], "has_more": False})
+        status = "cancelled" if request.url.path.endswith("/cancel") else "completed"
+        return httpx.Response(200, json={**AZURE_RESPONSE, "id": response_id, "status": status})
+
     def azure_response(self, request):
+        if request.url.path != "/openai/responses":
+            return self.azure_lifecycle_response(request)
         body = json.loads(request.content)
         self.azure_requests.append((str(request.url), body))
         if self.azure_status != 200:
@@ -190,16 +203,71 @@ class NativeAzureResponsesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 401, response.text)
         self.assertFalse(self.azure_requests)
 
-    def test_create_alias_uses_existing_handler_and_permissions(self):
-        alias = next(r for r in endpoints.router.routes if r.path == "/openai/responses" and "POST" in r.methods)
-        native = next(r for r in endpoints.router.routes if r.path == "/v1/responses" and "POST" in r.methods)
-        self.assertIs(alias.endpoint, native.endpoint)
-        self.assertEqual(
-            [dependency.dependency for dependency in alias.dependencies],
-            [dependency.dependency for dependency in native.dependencies],
-        )
-        self.assertTrue(RouteChecks.is_llm_api_route(alias.path))
-        self.assertTrue(RouteChecks.should_call_route(alias.path, UserAPIKeyAuth(allowed_routes=["llm_api_routes"])))
+    async def test_lifecycle_aliases_reach_the_deployment_that_created_the_response(self):
+        created = await self.client.post("/openai/responses", json={"model": "gpt-5.2", "input": "hello"})
+        self.assertEqual(created.status_code, 200, created.text)
+        response_id = created.json()["id"]
+
+        cases = [
+            ("GET", f"/openai/responses/{response_id}", ("GET", "/openai/responses/resp_test")),
+            ("DELETE", f"/openai/responses/{response_id}", ("DELETE", "/openai/responses/resp_test")),
+            ("GET", f"/openai/responses/{response_id}/input_items", ("GET", "/openai/responses/resp_test/input_items")),
+            ("POST", f"/openai/responses/{response_id}/cancel", ("POST", "/openai/responses/resp_test/cancel")),
+        ]
+        for method, path, expected_azure_call in cases:
+            with self.subTest(method=method, path=path):
+                self.azure_lifecycle.clear()
+                response = await self.client.request(method, path)
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(self.azure_lifecycle, [expected_azure_call])
+
+    async def test_input_tokens_alias_counts_locally_without_calling_azure(self):
+        response = await self.client.post("/openai/responses/input_tokens", json={"model": "gpt-5.2", "input": "hello"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["object"], "response.input_tokens")
+        self.assertFalse(self.azure_requests)
+        self.assertFalse(self.azure_lifecycle)
+
+    async def test_lifecycle_aliases_require_the_same_authentication(self):
+        for method, path in [
+            ("GET", "/openai/responses/resp_test"),
+            ("DELETE", "/openai/responses/resp_test"),
+            ("GET", "/openai/responses/resp_test/input_items"),
+            ("POST", "/openai/responses/resp_test/cancel"),
+            ("POST", "/openai/responses/input_tokens"),
+        ]:
+            with self.subTest(method=method, path=path):
+                response = await self.client.request(method, path, headers={"Authorization": ""})
+                self.assertEqual(response.status_code, 401, response.text)
+        self.assertFalse(self.azure_lifecycle)
+
+    def test_every_azure_sdk_alias_shares_the_native_handler_and_permissions(self):
+        def route(method, path):
+            return next((r for r in endpoints.router.routes if r.path == path and method in r.methods), None)
+
+        for method, alias_path in [
+            ("POST", "/openai/responses"),
+            ("GET", "/openai/responses/{response_id}"),
+            ("DELETE", "/openai/responses/{response_id}"),
+            ("GET", "/openai/responses/{response_id}/input_items"),
+            ("POST", "/openai/responses/{response_id}/cancel"),
+            ("POST", "/openai/responses/compact"),
+            ("POST", "/openai/responses/input_tokens"),
+        ]:
+            with self.subTest(method=method, path=alias_path):
+                alias = route(method, alias_path)
+                native = route(method, alias_path.replace("/openai/responses", "/v1/responses", 1))
+                self.assertIsNotNone(alias)
+                self.assertIs(alias.endpoint, native.endpoint)
+                self.assertEqual(
+                    [dependency.dependency for dependency in alias.dependencies],
+                    [dependency.dependency for dependency in native.dependencies],
+                )
+                concrete_path = alias_path.replace("{response_id}", "resp_123")
+                self.assertTrue(RouteChecks.is_llm_api_route(concrete_path))
+                self.assertTrue(
+                    RouteChecks.should_call_route(concrete_path, UserAPIKeyAuth(allowed_routes=["llm_api_routes"]))
+                )
 
     def test_prefix_normalization_preserves_real_deployment_names(self):
         config = AzureOpenAIResponsesAPIConfig()

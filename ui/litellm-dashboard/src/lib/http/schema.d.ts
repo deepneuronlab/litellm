@@ -11314,6 +11314,209 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/openai/responses": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Responses Api
+         * @description Follows the OpenAI Responses API spec: https://platform.openai.com/docs/api-reference/responses
+         *
+         *     Supports background mode with polling_via_cache for partial response retrieval.
+         *     When background=true and polling_via_cache is enabled, returns a polling_id immediately
+         *     and streams the response in the background, updating Redis cache.
+         *
+         *     ```bash
+         *     # Normal request
+         *     curl -X POST http://localhost:4000/v1/responses     -H "Content-Type: application/json"     -H "Authorization: Bearer $LITELLM_MASTER_KEY"     -d '{
+         *         "model": "gpt-4o",
+         *         "input": "Tell me about AI"
+         *     }'
+         *
+         *     # Background request with polling
+         *     curl -X POST http://localhost:4000/v1/responses     -H "Content-Type: application/json"     -H "Authorization: Bearer $LITELLM_MASTER_KEY"     -d '{
+         *         "model": "gpt-4o",
+         *         "input": "Tell me about AI",
+         *         "background": true
+         *     }'
+         *     ```
+         */
+        post: operations["responses_api_openai_responses_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/openai/responses/compact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Compact Response
+         * @description Compact a response by running a compaction pass over a conversation.
+         *
+         *     Returns encrypted, opaque items that can be used to reduce context size.
+         *
+         *     Follows the OpenAI Responses API spec: https://platform.openai.com/docs/api-reference/responses/compact
+         *
+         *     ```bash
+         *     curl -X POST http://localhost:4000/v1/responses/compact     -H "Content-Type: application/json"     -H "Authorization: Bearer $LITELLM_MASTER_KEY"     -d '{
+         *         "model": "gpt-4o",
+         *         "input": [{"role": "user", "content": "Hello"}]
+         *     }'
+         *     ```
+         */
+        post: operations["compact_response_openai_responses_compact_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/openai/responses/input_tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Responses Input Tokens
+         * @description Count the input tokens of a Responses API request without calling the model.
+         *
+         *     Follows the OpenAI Responses API spec: https://platform.openai.com/docs/api-reference/responses/input-tokens
+         *
+         *     ```bash
+         *     curl -X POST http://localhost:4000/v1/responses/input_tokens     -H "Content-Type: application/json"     -H "Authorization: Bearer $LITELLM_MASTER_KEY"     -d '{
+         *         "model": "gpt-4o",
+         *         "input": "Hello, how are you?"
+         *     }'
+         *     ```
+         *
+         *     Returns: `{"object": "response.input_tokens", "input_tokens": <count>}`
+         */
+        post: operations["responses_input_tokens_openai_responses_input_tokens_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/openai/responses/{response_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Response
+         * @description Get a response by ID.
+         *
+         *     Supports both:
+         *     - Polling IDs (litellm_poll_*): Returns cumulative cached content from background responses
+         *     - Provider response IDs: Passes through to provider API
+         *
+         *     Follows the OpenAI Responses API spec: https://platform.openai.com/docs/api-reference/responses/get
+         *
+         *     ```bash
+         *     # Get polling response
+         *     curl -X GET http://localhost:4000/v1/responses/litellm_poll_abc123     -H "Authorization: Bearer $LITELLM_MASTER_KEY"
+         *
+         *     # Get provider response
+         *     curl -X GET http://localhost:4000/v1/responses/resp_abc123     -H "Authorization: Bearer $LITELLM_MASTER_KEY"
+         *     ```
+         */
+        get: operations["get_response_openai_responses__response_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete Response
+         * @description Delete a response by ID.
+         *
+         *     Supports both:
+         *     - Polling IDs (litellm_poll_*): Deletes from Redis cache
+         *     - Provider response IDs: Passes through to provider API
+         *
+         *     Follows the OpenAI Responses API spec: https://platform.openai.com/docs/api-reference/responses/delete
+         *
+         *     ```bash
+         *     curl -X DELETE http://localhost:4000/v1/responses/resp_abc123     -H "Authorization: Bearer $LITELLM_MASTER_KEY"
+         *     ```
+         */
+        delete: operations["delete_response_openai_responses__response_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/openai/responses/{response_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Response
+         * @description Cancel a response by ID.
+         *
+         *     Supports both:
+         *     - Polling IDs (litellm_poll_*): Cancels background response and updates status in Redis
+         *     - Provider response IDs: Passes through to provider API
+         *
+         *     Follows the OpenAI Responses API spec: https://platform.openai.com/docs/api-reference/responses/cancel
+         *
+         *     ```bash
+         *     # Cancel polling response
+         *     curl -X POST http://localhost:4000/v1/responses/litellm_poll_abc123/cancel     -H "Authorization: Bearer $LITELLM_MASTER_KEY"
+         *
+         *     # Cancel provider response
+         *     curl -X POST http://localhost:4000/v1/responses/resp_abc123/cancel     -H "Authorization: Bearer $LITELLM_MASTER_KEY"
+         *     ```
+         */
+        post: operations["cancel_response_openai_responses__response_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/openai/responses/{response_id}/input_items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Response Input Items
+         * @description List input items for a response.
+         */
+        get: operations["get_response_input_items_openai_responses__response_id__input_items_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/openai/v1/realtime": {
         parameters: {
             query?: never;
@@ -68220,6 +68423,190 @@ export interface operations {
             header?: never;
             path: {
                 model: string | null;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    responses_api_openai_responses_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    compact_response_openai_responses_compact_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    responses_input_tokens_openai_responses_input_tokens_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    get_response_openai_responses__response_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                response_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_response_openai_responses__response_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                response_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_response_openai_responses__response_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                response_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_response_input_items_openai_responses__response_id__input_items_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                response_id: string;
             };
             cookie?: never;
         };
