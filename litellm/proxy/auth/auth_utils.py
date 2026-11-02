@@ -928,35 +928,10 @@ _DNL_NARROW_DATA_PLANE_ROUTES: Final[tuple[str, ...]] = (
 
 
 def dnl_route_is_unauthenticated_data_plane(route: str, general_settings: Mapping[str, object] | None) -> bool:
-    """DNL fork addition. general_settings.dnl_unauthenticated_llm_routes lets
-    a configured master_key gate only the Admin UI/management API while
-    LLM-serving (data-plane) routes stay unauthenticated. Off by default --
-    upstream behavior is unchanged when the flag is unset.
+    """Return whether the route is exempt from the bare master-key requirement.
 
-    Called identically from _user_api_key_auth_builder (grants the bare
-    token) and _run_centralized_common_checks (skips budget/team checks for
-    it) in user_api_key_auth.py -- one shared predicate, not two
-    independently-derived conditions, so the two sites cannot disagree.
-
-    Scope is the frozen _DNL_NARROW_DATA_PLANE_ROUTES allowlist (chat/completions,
-    embeddings, responses, decisions, moderations, audio, rerank, realtime,
-    /v1/models, messages, images, videos, batches, files, fine_tuning,
-    assistants, threads, vector_stores, search, ocr, containers, ...),
-    matched via RouteChecks.check_route_access, which handles
-    exact, "prefix*" wildcard, and "{param}" template routes -- a plain
-    `route in (...)` test would silently miss parameterized routes like
-    "/responses/{response_id}", since get_request_route() returns the
-    concrete request path, never the route template.
-
-    Deliberately does NOT offer a broader opt-in (e.g. MCP tool-call, agent
-    invocation, or RAG ingest/query routes): keep the exposed surface fixed
-    to what DNL's current callers actually use. Widen
-    _DNL_NARROW_DATA_PLANE_ROUTES explicitly, with review, if that changes.
-
-    Hard off whenever JWT, OAuth2, OAuth2-proxy, or a custom auth function is
-    configured, so a request actually authenticated via one of those for the
-    same route always still gets full common_checks/budget enforcement --
-    this flag only ever narrows the bare master-key requirement.
+    The flag only exempts routes in the frozen allowlist; JWT, OAuth, and
+    custom-auth requests remain subject to normal authorization and budget checks.
     """
     if not general_settings or not general_settings.get("dnl_unauthenticated_llm_routes", False):
         return False
