@@ -2,9 +2,12 @@ name: DNL image
 
 # DNL's LiteLLM gateway image, built from this fork's dnl/main* integration branches
 # (upstream release tag + DNL patches carried as commits).
-#   pull_request -> dnl/main* : unit tests, image build, in-image smoke tests. Nothing is published.
-#   push to dnl/main* (merge) : the same, then push ghcr.io/deepneuronlab/litellm:v<upstream>-dnl.<N>,
-#                               attest provenance and publish a GitHub Release tagged v<upstream>-dnl.<N>.
+#   pull_request -> dnl/main* : unit tests, then the read-only `image` job builds and smoke-tests.
+#                               Nothing is published and no write scope is granted.
+#   push to dnl/main* (merge) : unit tests, then the `publish` job builds, smoke-tests and pushes
+#                               ghcr.io/deepneuronlab/litellm:v<upstream>-dnl.<N> in one job, attests
+#                               provenance and publishes a GitHub Release tagged v<upstream>-dnl.<N>.
+# Shared build/smoke steps: .github/actions/dnl-image-build.
 
 on:
   pull_request:
@@ -71,12 +74,32 @@ jobs:
             tests/unit/test_router_azure_gpt5_series_metadata.py \
             --tb=short -n 4 --dist=loadscope
 
+  # pull_request: build and smoke-test with the workflow's read-only token. Nothing is published.
   image:
+    if: github.event_name == 'pull_request'
     needs: unit-tests
     runs-on: ubuntu-26.04
     timeout-minutes: 60
-    # Write scopes are only exercised by the push-gated steps; pull_request runs
-    # from forks get a read-only token regardless.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+
+      - name: Build and smoke-test
+        uses: ./.github/actions/dnl-image-build
+        with:
+          image: ${{ env.IMAGE }}
+          github-token: ${{ github.token }}
+
+  # push to dnl/main* only: build, smoke-test and publish in one job, so the pushed digest is
+  # the image that was just tested. The only job that holds write scopes.
+  publish:
+    if: github.event_name == 'push'
+    needs: unit-tests
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
     permissions:
       contents: write
       packages: write
@@ -88,107 +111,14 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Resolve version
+      - name: Build and smoke-test
         id: version
-        env:
-          GH_TOKEN: ${{ github.token }}
-          EVENT_NAME: ${{ github.event_name }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          set -euo pipefail
-          upstream="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
-          prefix="v${upstream}-dnl."
-          if [ "$EVENT_NAME" = pull_request ]; then
-            version="${prefix}pr${PR_NUMBER}"
-          else
-            max=0
-            existing=""
-            while read -r tag sha; do
-              n="${tag#"$prefix"}"
-              [[ "$n" =~ ^[0-9]+$ ]] || continue
-              if [ "$sha" = "$GITHUB_SHA" ]; then existing="$tag"; fi
-              if (( n > max )); then max=$n; fi
-            done < <(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/${prefix}" \
-              --jq '.[] | "\(.ref | ltrimstr("refs/tags/")) \(.object.sha)"')
-            if [ -n "$existing" ]; then
-              echo "::error::${GITHUB_SHA} is already released as ${existing}; refusing to overwrite its image"
-              exit 1
-            fi
-            # v1.88.1-dnl.1 and .2 were hand-built overlays from deepneuronlab/infrastructure
-            # images/litellm-gateway (ACR only); this series continues after them.
-            if [ "$upstream" = "1.88.1" ] && (( max < 2 )); then max=2; fi
-            version="${prefix}$((max + 1))"
-          fi
-          {
-            echo "upstream=${upstream}"
-            echo "version=${version}"
-            echo "short=${GITHUB_SHA::7}"
-          } >> "$GITHUB_OUTPUT"
-          echo "Building ${IMAGE}:${version} (upstream ${upstream})"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-
-      - name: Build image
-        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        uses: ./.github/actions/dnl-image-build
         with:
-          context: .
-          file: Dockerfile
-          platforms: linux/amd64
-          push: false
-          load: true
-          tags: |
-            ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
-            ${{ env.IMAGE }}:sha-${{ steps.version.outputs.short }}
-          # org.opencontainers.image.source links the GHCR package to this repository.
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ steps.version.outputs.version }}
-            org.opencontainers.image.title=litellm
-            org.opencontainers.image.description=DNL LiteLLM gateway: BerriAI/litellm v${{ steps.version.outputs.upstream }} with DNL patches
-          cache-from: type=gha,scope=dnl-image
-          cache-to: ${{ github.event_name == 'push' && 'type=gha,scope=dnl-image,mode=max' || '' }}
-
-      - name: Run DNL regression tests inside the image
-        env:
-          LOCAL_IMAGE: ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
-        run: |
-          docker run --rm -e LITELLM_LOCAL_MODEL_COST_MAP \
-            -v "$PWD/tests/unit/proxy/response_api_endpoints/test_azure_openai_responses_route.py:/dnl-tests/test_azure_openai_responses_route.py:ro" \
-            -v "$PWD/tests/unit/proxy/decisions_endpoints/test_azure_openai_decisions.py:/dnl-tests/test_azure_openai_decisions.py:ro" \
-            -w /dnl-tests --entrypoint python3 "$LOCAL_IMAGE" \
-            -m unittest -v test_azure_openai_responses_route test_azure_openai_decisions
-
-      - name: Boot the proxy
-        env:
-          LOCAL_IMAGE: ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
-        run: |
-          # v1.106.6 refuses to start without a strong master key.
-          smoke_key="sk-$(openssl rand -hex 32)"
-          docker run -d --name dnl-litellm-smoke -e LITELLM_LOCAL_MODEL_COST_MAP -e LITELLM_MASTER_KEY="$smoke_key" \
-            -p 4000:4000 "$LOCAL_IMAGE" --port 4000
-          for _ in $(seq 1 90); do
-            if curl -fs -o /dev/null http://127.0.0.1:4000/health/liveliness; then
-              # The Azure SDK aliases are hidden from /openapi.json; a native handler answers a bad model with
-              # a model error, while the OpenAI pass-through it must not fall into demands OPENAI_API_KEY.
-              body="$(curl -s -X POST http://127.0.0.1:4000/openai/responses -H "Authorization: Bearer $smoke_key" \
-                -H 'Content-Type: application/json' -d '{"model":"dnl-smoke-missing","input":"hi"}')"
-              echo "$body"
-              if grep -q OPENAI_API_KEY <<<"$body"; then exit 1; fi
-              exit 0
-            fi
-            sleep 2
-          done
-          docker logs dnl-litellm-smoke
-          exit 1
-
-      - name: Stop the proxy
-        if: always()
-        run: docker rm -f dnl-litellm-smoke || true
+          image: ${{ env.IMAGE }}
+          github-token: ${{ github.token }}
 
       - name: Log in to GHCR
-        if: github.event_name == 'push'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
@@ -196,7 +126,6 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Push image
-        if: github.event_name == 'push'
         id: push
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -210,7 +139,6 @@ jobs:
           echo "Pushed ${IMAGE}:${VERSION}@${digest}"
 
       - name: Attest image provenance
-        if: github.event_name == 'push'
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
         with:
           subject-name: ${{ env.IMAGE }}
@@ -218,7 +146,6 @@ jobs:
           push-to-registry: true
 
       - name: Publish GitHub Release
-        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}

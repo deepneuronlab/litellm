@@ -1,0 +1,133 @@
+name: "Build and smoke-test the DNL image"
+description: >-
+  Resolve the DNL release version, build the gateway image from the root Dockerfile into the
+  local Docker daemon, and run the in-image regression tests plus a proxy boot smoke test.
+  Shared by the read-only pull_request job and the push-only publish job, so the publish job
+  pushes exactly the image it has just tested. Pushes nothing itself.
+
+inputs:
+  image:
+    description: Image repository, e.g. ghcr.io/<owner>/<repo>.
+    required: true
+  github-token:
+    description: Token used to list existing release tags on push.
+    required: true
+
+outputs:
+  upstream:
+    description: Upstream LiteLLM version from pyproject.toml.
+    value: ${{ steps.version.outputs.upstream }}
+  version:
+    description: DNL image version tag.
+    value: ${{ steps.version.outputs.version }}
+  short:
+    description: Short commit SHA.
+    value: ${{ steps.version.outputs.short }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve version
+      id: version
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        EVENT_NAME: ${{ github.event_name }}
+        IMAGE: ${{ inputs.image }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        upstream="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+        prefix="v${upstream}-dnl."
+        if [ "$EVENT_NAME" = pull_request ]; then
+          version="${prefix}pr${PR_NUMBER}"
+        else
+          max=0
+          existing=""
+          while read -r tag sha; do
+            n="${tag#"$prefix"}"
+            [[ "$n" =~ ^[0-9]+$ ]] || continue
+            if [ "$sha" = "$GITHUB_SHA" ]; then existing="$tag"; fi
+            if (( n > max )); then max=$n; fi
+          done < <(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/${prefix}" \
+            --jq '.[] | "\(.ref | ltrimstr("refs/tags/")) \(.object.sha)"')
+          if [ -n "$existing" ]; then
+            echo "::error::${GITHUB_SHA} is already released as ${existing}; refusing to overwrite its image"
+            exit 1
+          fi
+          # v1.88.1-dnl.1 and .2 were hand-built overlays from deepneuronlab/infrastructure
+          # images/litellm-gateway (ACR only); this series continues after them.
+          if [ "$upstream" = "1.88.1" ] && (( max < 2 )); then max=2; fi
+          version="${prefix}$((max + 1))"
+        fi
+        {
+          echo "upstream=${upstream}"
+          echo "version=${version}"
+          echo "short=${GITHUB_SHA::7}"
+        } >> "$GITHUB_OUTPUT"
+        echo "Building ${IMAGE}:${version} (upstream ${upstream})"
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+    - name: Build image
+      uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+      with:
+        context: .
+        file: Dockerfile
+        platforms: linux/amd64
+        push: false
+        load: true
+        tags: |
+          ${{ inputs.image }}:${{ steps.version.outputs.version }}
+          ${{ inputs.image }}:sha-${{ steps.version.outputs.short }}
+        # org.opencontainers.image.source links the GHCR package to this repository.
+        labels: |
+          org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          org.opencontainers.image.revision=${{ github.sha }}
+          org.opencontainers.image.version=${{ steps.version.outputs.version }}
+          org.opencontainers.image.title=litellm
+          org.opencontainers.image.description=DNL LiteLLM gateway: BerriAI/litellm v${{ steps.version.outputs.upstream }} with DNL patches
+        cache-from: type=gha,scope=dnl-image
+        cache-to: ${{ github.event_name == 'push' && 'type=gha,scope=dnl-image,mode=max' || '' }}
+
+    - name: Run DNL regression tests inside the image
+      env:
+        LOCAL_IMAGE: ${{ inputs.image }}:${{ steps.version.outputs.version }}
+      shell: bash
+      run: |
+        docker run --rm -e LITELLM_LOCAL_MODEL_COST_MAP \
+          -v "$PWD/tests/unit/proxy/response_api_endpoints/test_azure_openai_responses_route.py:/dnl-tests/test_azure_openai_responses_route.py:ro" \
+          -v "$PWD/tests/unit/proxy/decisions_endpoints/test_azure_openai_decisions.py:/dnl-tests/test_azure_openai_decisions.py:ro" \
+          -w /dnl-tests --entrypoint python3 "$LOCAL_IMAGE" \
+          -m unittest -v test_azure_openai_responses_route test_azure_openai_decisions
+
+    - name: Boot the proxy
+      env:
+        LOCAL_IMAGE: ${{ inputs.image }}:${{ steps.version.outputs.version }}
+      shell: bash
+      run: |
+        # v1.106.6 refuses to start without a strong master key.
+        smoke_key="sk-$(openssl rand -hex 32)"
+        docker run -d --name dnl-litellm-smoke -e LITELLM_LOCAL_MODEL_COST_MAP -e LITELLM_MASTER_KEY="$smoke_key" \
+          -p 4000:4000 "$LOCAL_IMAGE" --port 4000
+        for _ in $(seq 1 90); do
+          if curl -fs -o /dev/null http://127.0.0.1:4000/health/liveliness; then
+            # The Azure SDK aliases are hidden from /openapi.json; a native handler answers a bad model with
+            # a model error, while the OpenAI pass-through it must not fall into demands OPENAI_API_KEY.
+            body="$(curl -s -X POST http://127.0.0.1:4000/openai/responses -H "Authorization: Bearer $smoke_key" \
+              -H 'Content-Type: application/json' -d '{"model":"dnl-smoke-missing","input":"hi"}')"
+            echo "$body"
+            if grep -q OPENAI_API_KEY <<<"$body"; then exit 1; fi
+            exit 0
+          fi
+          sleep 2
+        done
+        docker logs dnl-litellm-smoke
+        exit 1
+
+    - name: Stop the proxy
+      if: always()
+      shell: bash
+      run: docker rm -f dnl-litellm-smoke || true
+
