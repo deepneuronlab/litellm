@@ -387,6 +387,39 @@ def test_config_field_update_happy_admin(client, auth_as, mock_prisma, monkeypat
     }
 
 
+def test_config_field_update_accepts_dnl_unauthenticated_routes(client, auth_as, mock_prisma, monkeypatch):
+    from litellm.proxy import proxy_server as ps
+    from litellm.proxy._types import LitellmUserRoles
+
+    table = _install_litellm_config(mock_prisma)
+    table.find_first = AsyncMock(return_value=None)
+    table.upsert = AsyncMock(
+        return_value={
+            "param_name": "general_settings",
+            "param_value": {"dnl_unauthenticated_llm_routes": True},
+            "id": "row-1",
+        }
+    )
+    monkeypatch.setattr(ps, "prisma_client", mock_prisma)
+
+    with auth_as(LitellmUserRoles.PROXY_ADMIN):
+        response = client.post(
+            "/config/field/update",
+            json={
+                "field_name": "dnl_unauthenticated_llm_routes",
+                "field_value": True,
+                "config_type": "general_settings",
+            },
+        )
+
+    assert response.status_code == 200
+    assert normalize(response.json()) == {
+        "param_name": "general_settings",
+        "param_value": {"dnl_unauthenticated_llm_routes": True},
+        "id": "<VOLATILE>",
+    }
+
+
 def test_config_field_update_non_admin_rejected(client, auth_as, mock_prisma, monkeypatch):
     """Non-admin cannot update config fields — returns 400 with not-allowed
     detail (handler uses 400 for the auth gate, not 403)."""
