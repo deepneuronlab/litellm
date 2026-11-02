@@ -11207,10 +11207,7 @@ class Router:
                     _azure_fallback_key,
                 )
             elif _model.startswith("gpt5_series/"):
-                # Deployment names such as gpt-6-luna-dz are not cost-map keys. Use the metadata
-                # the Router registered under the deployment's own key (its explicit model_info,
-                # if any) instead of logging an error on every pre-call check; no limits or
-                # pricing are invented.
+                # These deployment names are not cost-map keys; debug avoids noisy per-call errors.
                 verbose_router_logger.debug(
                     "Azure deployment '%s' is not in the model cost map; using its registered deployment metadata.",
                     _model,
