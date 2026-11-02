@@ -6278,20 +6278,6 @@ def test_get_logging_payload_reads_api_base_from_litellm_params_for_embeddings()
 
 
 def test_azure_embedding_handler_end_to_end_populates_api_base():
-    """
-    End-to-end regression test for https://github.com/BerriAI/litellm/issues/23768.
-
-    Calls the actual ``AzureChatCompletion.embedding`` method with an injected
-    ``AzureOpenAI`` client whose HTTP transport is mocked (no real network) and
-    asserts that after the call,
-    ``logging_obj.model_call_details["litellm_params"]["api_base"]`` is
-    populated. This guards against the same regression path described in
-    PR #23770 — a future refactor dropping ``"api_base"`` from the
-    ``additional_args`` dict inside the provider handler.
-
-    The isolation-level tests above exercise ``Logging.pre_call`` directly;
-    this test additionally pins the contract on the Azure handler itself.
-    """
     import httpx
     from openai import AzureOpenAI
 
