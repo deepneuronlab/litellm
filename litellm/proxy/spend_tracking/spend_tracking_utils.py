@@ -124,9 +124,9 @@ def _is_dnl_service_alias(value: str, key_alias: object) -> bool:
     # re-check the pattern so an alias equal to a secret-shaped value is never trusted alone.
     if value != key_alias:
         return False
-    from litellm.proxy.proxy_server import general_settings
+    from litellm.proxy.proxy_server import general_settings_view
 
-    return dnl_logged_service_alias(value, general_settings) is not None
+    return dnl_logged_service_alias(value, general_settings_view()) is not None
 
 
 def _is_non_secret_key_value(value: str, *, key_alias: object = None) -> bool:

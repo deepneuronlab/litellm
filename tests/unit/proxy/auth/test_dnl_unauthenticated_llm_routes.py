@@ -15,7 +15,7 @@ import litellm
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.proxy import proxy_server
 from litellm.proxy._types import LiteLLMRoutes
-from litellm.proxy.auth.auth_utils import dnl_route_is_unauthenticated_data_plane
+from litellm.proxy.auth.auth_utils import dnl_logged_service_alias, dnl_route_is_unauthenticated_data_plane
 from litellm.proxy.spend_tracking.spend_tracking_utils import get_logging_payload
 from litellm.proxy.utils import hash_token
 
@@ -108,6 +108,13 @@ class UnauthenticatedDataPlaneProxyTests(unittest.IsolatedAsyncioTestCase):
             (hash_token("aux4-spectra"), hash_token("aux4-spectra")),
         )
 
+    async def test_invalid_alias_pattern_keeps_keys_hashed_and_serving(self):
+        self.general_settings["dnl_logged_key_alias_pattern"] = "(unclosed"
+        self.assertEqual(
+            await self._spend_log_for({"api-key": "aux4-spectra"}),
+            (hash_token("aux4-spectra"), hash_token("aux4-spectra")),
+        )
+
 
 class UnauthenticatedDataPlanePredicateTests(unittest.TestCase):
     def setUp(self):
@@ -153,6 +160,16 @@ class UnauthenticatedDataPlanePredicateTests(unittest.TestCase):
                 )
         with patch.object(proxy_server, "user_custom_auth", object()):
             self.assertFalse(dnl_route_is_unauthenticated_data_plane("/v1/chat/completions", FLAG_ON))
+
+
+class DnlLoggedServiceAliasTests(unittest.TestCase):
+    def test_only_short_plain_bearers_fully_matching_the_pattern_are_stamped(self):
+        settings = {"dnl_logged_key_alias_pattern": ".*"}
+        self.assertEqual(dnl_logged_service_alias("aux4-spectra", settings), "aux4-spectra")
+        self.assertEqual(dnl_logged_service_alias("a" * 64, settings), "a" * 64)
+        for key in ("a" * 65, "aux4 spectra", "aux4.spectra", "aux4/spectra", ""):
+            with self.subTest(key=key):
+                self.assertIsNone(dnl_logged_service_alias(key, settings))
 
 
 if __name__ == "__main__":

@@ -1556,6 +1556,7 @@ async def user_api_key_auth_builder(
 ) -> UserAPIKeyAuth:
     from litellm.proxy.proxy_server import (
         general_settings,
+        general_settings_view,
         jwt_handler,
         litellm_proxy_admin_name,
         llm_router,
@@ -1958,7 +1959,7 @@ async def user_api_key_auth_builder(
         if dnl_route_is_unauthenticated_data_plane(route=route, general_settings=general_settings):
             return UserAPIKeyAuth(
                 api_key=api_key if isinstance(api_key, str) else None,
-                key_alias=dnl_logged_service_alias(api_key, general_settings),
+                key_alias=dnl_logged_service_alias(api_key, general_settings_view()),
                 user_role=LitellmUserRoles.INTERNAL_USER,
                 parent_otel_span=parent_otel_span,
             )
