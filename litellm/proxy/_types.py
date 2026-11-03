@@ -2817,6 +2817,10 @@ class ConfigGeneralSettings(LiteLLMPydanticObjectBase):
         None,
         description="allow unauthenticated access to the frozen DNL data-plane route allowlist when master_key is configured; off by default",
     )
+    dnl_logged_key_alias_pattern: str | None = Field(
+        None,
+        description="full-match regex for DNL service aliases that may remain readable in spend logs",
+    )
     dangerously_permit_weak_or_unset_master_key: bool | None = Field(
         None,
         description="local development only: start even when master_key is unset, empty, or a publicly known default",
@@ -3532,6 +3536,8 @@ class UserAPIKeyAuth(LiteLLM_VerificationTokenView):  # the expected response ob
     mcp_session_resource_server_id: str | None = Field(default=None, exclude=True)
     mcp_toolset_id: str | None = Field(default=None, exclude=True)
     authenticated_by_custom_auth: bool = Field(default=False, exclude=True)
+    # Server-only logging attribution, never an identity for key-scoped policy matching
+    dnl_logged_alias: str | None = Field(default=None, exclude=True)
     via_virtual_key: bool = Field(
         default=False,
         exclude=True,
@@ -3594,6 +3600,7 @@ class UserAPIKeyAuth(LiteLLM_VerificationTokenView):  # the expected response ob
         values.pop("mcp_toolset_id", None)
         values.pop("via_virtual_key", None)
         values.pop("authenticated_by_custom_auth", None)
+        values.pop("dnl_logged_alias", None)
         values.pop("agent_caller", None)
         values.pop("managed_agent_context", None)
         values.pop("managed_agent_policy", None)

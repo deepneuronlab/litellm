@@ -1699,6 +1699,8 @@ class LiteLLMProxyRequestSetup:
 
     @staticmethod
     def get_logged_api_key(user_api_key_dict: UserAPIKeyAuth) -> str | None:
+        if user_api_key_dict.dnl_logged_alias is not None:
+            return user_api_key_dict.dnl_logged_alias
         if user_api_key_dict.is_session_token and user_api_key_dict.key_alias:
             return user_api_key_dict.key_alias
         return user_api_key_dict.api_key
@@ -1711,7 +1713,7 @@ class LiteLLMProxyRequestSetup:
         auth_metadata: Final = cast("dict[str, str] | None", stripped_metadata)  # cast-ok: metadata is free-form JSON
         user_api_key_logged_metadata: Final = StandardLoggingUserAPIKeyMetadata(
             user_api_key_hash=LiteLLMProxyRequestSetup.get_logged_api_key(user_api_key_dict),
-            user_api_key_alias=user_api_key_dict.key_alias,
+            user_api_key_alias=user_api_key_dict.dnl_logged_alias or user_api_key_dict.key_alias,
             user_api_key_spend=user_api_key_dict.spend,
             user_api_key_max_budget=user_api_key_dict.max_budget,
             user_api_key_user_spend=user_api_key_dict.user_spend,
@@ -1733,7 +1735,9 @@ class LiteLLMProxyRequestSetup:
             ),
             user_api_key_auth_metadata=auth_metadata,
         )
-        return user_api_key_logged_metadata
+        if user_api_key_dict.dnl_logged_alias is None:
+            return user_api_key_logged_metadata
+        return {**user_api_key_logged_metadata, "user_api_key_dnl_bypass": True}
 
     @staticmethod
     def add_user_api_key_auth_to_request_metadata(

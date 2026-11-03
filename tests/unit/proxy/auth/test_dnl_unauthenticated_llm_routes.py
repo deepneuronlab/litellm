@@ -1,21 +1,43 @@
 """DNL fork: general_settings.dnl_unauthenticated_llm_routes keeps the master key on the
 Admin UI / management API while the model-serving surface stays anonymous."""
 
+import asyncio
+import json
 import os
 import unittest
+from datetime import datetime, timezone
+from typing import Final
 from unittest.mock import patch
 
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
+from fastapi import Request
 import httpx
 
 import litellm
+from litellm.integrations.custom_logger import CustomLogger
 from litellm.proxy import proxy_server
-from litellm.proxy._types import LiteLLMRoutes
-from litellm.proxy.auth.auth_utils import dnl_route_is_unauthenticated_data_plane
+from litellm.proxy._types import ConfigGeneralSettings, LitellmUserRoles, LiteLLMRoutes, UserAPIKeyAuth
+from litellm.proxy.auth.auth_utils import dnl_logged_service_alias, dnl_route_is_unauthenticated_data_plane
+from litellm.proxy.auth.user_api_key_auth import user_api_key_auth_builder
+from litellm.proxy.litellm_pre_call_utils import LiteLLMProxyRequestSetup
+from litellm.proxy.spend_tracking.spend_tracking_utils import get_logging_payload
+from litellm.proxy.utils import hash_token
 
 FLAG_ON = {"dnl_unauthenticated_llm_routes": True}
 CHAT = {"model": "chat", "messages": [{"role": "user", "content": "hi"}]}
+ALIAS_PATTERN = r"(dev|aux([1-9]|10))-(anexo|delphi|spectra|mentat)"
+
+
+class _SuccessCapture(CustomLogger):
+    def __init__(self):
+        super().__init__()
+        self.calls: list[tuple] = []
+        self.success_event: Final[asyncio.Event] = asyncio.Event()
+
+    async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+        self.calls.append((kwargs, response_obj, start_time, end_time))
+        self.success_event.set()
 
 
 class UnauthenticatedDataPlaneProxyTests(unittest.IsolatedAsyncioTestCase):
@@ -58,6 +80,94 @@ class UnauthenticatedDataPlaneProxyTests(unittest.IsolatedAsyncioTestCase):
         self.general_settings.clear()
         response = await self.client.post("/v1/chat/completions", json=CHAT)
         self.assertEqual(response.status_code, 401, response.text)
+
+    async def _spend_log_for(
+        self, headers: dict[str, str], request_body: dict[str, object] | None = None
+    ) -> tuple[str, str]:
+        if not hasattr(self, "_capture"):
+            self._capture = _SuccessCapture()
+            litellm.callbacks.append(self._capture)
+        self._capture.success_event.clear()
+        response = await self.client.post(
+            "/v1/chat/completions", json=CHAT if request_body is None else request_body, headers=headers
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        await self._capture.success_event.wait()
+        payload = get_logging_payload(*self._capture.calls[-1])
+        return payload["api_key"], json.loads(payload["metadata"])["user_api_key"]
+
+    async def test_allow_listed_service_alias_is_logged_readable(self):
+        self.general_settings["dnl_logged_key_alias_pattern"] = ALIAS_PATTERN
+        for headers in ({"api-key": "aux4-spectra"}, {"Authorization": "Bearer aux4-spectra"}):
+            with self.subTest(headers=headers):
+                self.assertEqual(await self._spend_log_for(headers), ("aux4-spectra", "aux4-spectra"))
+
+    async def test_explicitly_allowed_sk_alias_is_logged_readable(self) -> None:
+        self.general_settings["dnl_logged_key_alias_pattern"] = "sk-service"
+        self.assertEqual(await self._spend_log_for({"api-key": "sk-service"}), ("sk-service", "sk-service"))
+
+    async def test_service_alias_does_not_become_key_policy_identity(self) -> None:
+        self.general_settings["dnl_logged_key_alias_pattern"] = ALIAS_PATTERN
+        request: Final = Request({"type": "http", "method": "POST", "path": "/v1/chat/completions", "headers": []})
+        auth: Final = await user_api_key_auth_builder(
+            request=request,
+            api_key="Bearer aux4-spectra",
+            azure_api_key_header="",
+            anthropic_api_key_header=None,
+            google_ai_studio_api_key_header=None,
+            azure_apim_header=None,
+            request_data=CHAT,
+        )
+        self.assertIsNone(auth.key_alias)
+        self.assertEqual(auth.dnl_logged_alias, "aux4-spectra")
+
+    async def test_keys_outside_the_alias_pattern_are_still_hashed(self):
+        self.general_settings["dnl_logged_key_alias_pattern"] = ALIAS_PATTERN
+        for key in ("aux4-spectra-x", "prod-anexo", "sk-not-an-alias", "6f1ed002ab5595859014ebf0951522d9"):
+            with self.subTest(key=key):
+                self.assertEqual(await self._spend_log_for({"api-key": key}), (hash_token(key), hash_token(key)))
+
+    async def test_service_alias_is_hashed_without_a_configured_pattern(self):
+        self.assertEqual(
+            await self._spend_log_for({"api-key": "aux4-spectra"}),
+            (hash_token("aux4-spectra"), hash_token("aux4-spectra")),
+        )
+
+    async def test_invalid_alias_pattern_keeps_keys_hashed_and_serving(self):
+        self.general_settings["dnl_logged_key_alias_pattern"] = "(unclosed"
+        self.assertEqual(
+            await self._spend_log_for({"api-key": "aux4-spectra"}),
+            (hash_token("aux4-spectra"), hash_token("aux4-spectra")),
+        )
+
+    async def test_pathological_pattern_keeps_keys_hashed_and_serving(self) -> None:
+        key: Final = "g" * 63 + "h"
+        self.general_settings["dnl_logged_key_alias_pattern"] = "(g|gg)+$"
+        self.assertEqual(
+            await self._spend_log_for({"api-key": key}),
+            (hash_token(key), hash_token(key)),
+        )
+
+    async def test_custom_auth_cannot_bypass_dnl_alias_redaction(self) -> None:
+        key: Final = "aux4-spectra"
+        self.general_settings["dnl_logged_key_alias_pattern"] = ALIAS_PATTERN
+        request_body: Final = {**CHAT, "metadata": {"user_api_key_dnl_bypass": True}}
+
+        async def custom_auth(request: Request, api_key: str) -> UserAPIKeyAuth:
+            self.assertEqual(request.url.path, "/v1/chat/completions")
+            return UserAPIKeyAuth(
+                api_key=api_key,
+                key_alias=api_key,
+                is_session_token=True,
+                dnl_logged_alias=key,
+                user_role=LitellmUserRoles.INTERNAL_USER,
+            )
+
+        with patch.object(proxy_server, "user_custom_auth", custom_auth):
+            self.assertEqual(
+                await self._spend_log_for({"api-key": key}, request_body),
+                (hash_token(key), hash_token(key)),
+            )
 
 
 class UnauthenticatedDataPlanePredicateTests(unittest.TestCase):
@@ -104,6 +214,37 @@ class UnauthenticatedDataPlanePredicateTests(unittest.TestCase):
                 )
         with patch.object(proxy_server, "user_custom_auth", object()):
             self.assertFalse(dnl_route_is_unauthenticated_data_plane("/v1/chat/completions", FLAG_ON))
+
+
+class DnlLoggedServiceAliasTests(unittest.TestCase):
+    def test_only_short_plain_bearers_fully_matching_the_pattern_are_stamped(self):
+        settings = {"dnl_logged_key_alias_pattern": ".*"}
+        self.assertEqual(dnl_logged_service_alias("aux4-spectra", settings), "aux4-spectra")
+        self.assertEqual(dnl_logged_service_alias("a" * 64, settings), "a" * 64)
+        for key in ("a" * 65, "aux4 spectra", "aux4.spectra", "aux4/spectra", ""):
+            with self.subTest(key=key):
+                self.assertIsNone(dnl_logged_service_alias(key, settings))
+
+    def test_pattern_survives_general_settings_validation(self):
+        settings = ConfigGeneralSettings.model_validate({"dnl_logged_key_alias_pattern": ALIAS_PATTERN})
+        self.assertEqual(dnl_logged_service_alias("aux4-spectra", settings.model_dump()), "aux4-spectra")
+
+    def test_direct_metadata_builder_preserves_only_trusted_aliases(self) -> None:
+        key: Final = "aux4-spectra"
+        now: Final = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        with patch.object(proxy_server, "general_settings", {"dnl_logged_key_alias_pattern": ALIAS_PATTERN}):
+            for trusted in (False, True):
+                auth: Final = UserAPIKeyAuth(api_key=key, key_alias=key)
+                auth.dnl_logged_alias = key if trusted else None
+                metadata: Final = {
+                    **LiteLLMProxyRequestSetup.get_sanitized_user_information_from_key(auth),
+                    "user_api_key": key,
+                    "status": "failure",
+                }
+                payload: Final = get_logging_payload({"litellm_params": {"metadata": metadata}}, {}, now, now)
+                expected: Final = key if trusted else hash_token(key)
+                self.assertEqual(payload["api_key"], expected)
+                self.assertEqual(json.loads(payload["metadata"])["user_api_key"], expected)
 
 
 if __name__ == "__main__":

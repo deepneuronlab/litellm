@@ -7,6 +7,7 @@ from functools import lru_cache
 from logging import Logger
 from typing import Any, Final, Protocol
 
+import regex
 from fastapi import HTTPException, Request, status
 from pydantic import PositiveInt, TypeAdapter, ValidationError
 
@@ -949,6 +950,47 @@ def dnl_route_is_unauthenticated_data_plane(route: str, general_settings: Mappin
     from litellm.proxy.auth.route_checks import RouteChecks
 
     return RouteChecks.check_route_access(route=route, allowed_routes=_DNL_NARROW_DATA_PLANE_ROUTES)
+
+
+_DNL_LOGGED_ALIAS_SHAPE: Final = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_DNL_LOGGED_ALIAS_MATCH_TIMEOUT_SECONDS: Final = 0.01
+
+
+@lru_cache(maxsize=8)
+def _dnl_logged_key_alias_regex(pattern: str) -> regex.Pattern[str] | None:
+    try:
+        return regex.compile(pattern)
+    except regex.error as exc:
+        verbose_proxy_logger.error("dnl_logged_key_alias_pattern is not a valid regex, keys stay hashed: %s", exc)
+        return None
+
+
+def dnl_logged_service_alias(api_key: object, general_settings: Mapping[str, object] | None) -> str | None:
+    """Return the bearer when it fully matches ``dnl_logged_key_alias_pattern``, else None.
+
+    Our services send a non-secret ``<env>-<service>`` alias as their key on the
+    unauthenticated data plane. Upstream hashes every logged key it cannot prove
+    non-secret, so only bearers matching the operator-configured allow-list pattern are
+    stamped as ``key_alias`` and kept readable in spend logs; anything else stays hashed.
+    Bearers longer than 64 characters or outside ``[A-Za-z0-9_-]`` are never matched, so the
+    operator pattern only ever runs against short, plain alias-shaped input.
+    """
+    if not isinstance(api_key, str) or not general_settings:
+        return None
+    pattern: Final = general_settings.get("dnl_logged_key_alias_pattern")
+    if not isinstance(pattern, str) or not pattern or _DNL_LOGGED_ALIAS_SHAPE.fullmatch(api_key) is None:
+        return None
+    compiled: Final = _dnl_logged_key_alias_regex(pattern)
+    if compiled is None:
+        return None
+    try:
+        return (
+            api_key
+            if compiled.fullmatch(api_key, timeout=_DNL_LOGGED_ALIAS_MATCH_TIMEOUT_SECONDS) is not None
+            else None
+        )
+    except TimeoutError:
+        return None
 
 
 def get_request_route(request: Request) -> str:

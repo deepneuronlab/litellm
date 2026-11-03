@@ -93,6 +93,7 @@ from litellm.proxy.auth.auth_object_prefetch import (
 )
 from litellm.proxy.auth.auth_utils import (
     abbreviate_api_key,
+    dnl_logged_service_alias,
     dnl_route_is_unauthenticated_data_plane,
     fallback_target_model_name,
     get_end_user_id_from_request_body,
@@ -1555,6 +1556,7 @@ async def user_api_key_auth_builder(
 ) -> UserAPIKeyAuth:
     from litellm.proxy.proxy_server import (
         general_settings,
+        general_settings_view,
         jwt_handler,
         litellm_proxy_admin_name,
         llm_router,
@@ -1955,11 +1957,14 @@ async def user_api_key_auth_builder(
         # earlier on success), so those still take precedence for
         # data-plane routes whenever configured.
         if dnl_route_is_unauthenticated_data_plane(route=route, general_settings=general_settings):
-            return UserAPIKeyAuth(
+            dnl_alias: Final = dnl_logged_service_alias(api_key, general_settings_view())
+            user_api_key_auth_obj: Final = UserAPIKeyAuth(
                 api_key=api_key if isinstance(api_key, str) else None,
                 user_role=LitellmUserRoles.INTERNAL_USER,
                 parent_otel_span=parent_otel_span,
             )
+            user_api_key_auth_obj.dnl_logged_alias = dnl_alias
+            return user_api_key_auth_obj
         if master_key is None:
             if isinstance(api_key, str):
                 return UserAPIKeyAuth(
