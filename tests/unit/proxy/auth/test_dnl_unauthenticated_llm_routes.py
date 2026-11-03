@@ -10,12 +10,13 @@ from unittest.mock import patch
 
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
+from fastapi import Request
 import httpx
 
 import litellm
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.proxy import proxy_server
-from litellm.proxy._types import ConfigGeneralSettings, LiteLLMRoutes
+from litellm.proxy._types import ConfigGeneralSettings, LitellmUserRoles, LiteLLMRoutes, UserAPIKeyAuth
 from litellm.proxy.auth.auth_utils import dnl_logged_service_alias, dnl_route_is_unauthenticated_data_plane
 from litellm.proxy.spend_tracking.spend_tracking_utils import get_logging_payload
 from litellm.proxy.utils import hash_token
@@ -77,12 +78,16 @@ class UnauthenticatedDataPlaneProxyTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.post("/v1/chat/completions", json=CHAT)
         self.assertEqual(response.status_code, 401, response.text)
 
-    async def _spend_log_for(self, headers: dict[str, str]) -> tuple[str, str]:
+    async def _spend_log_for(
+        self, headers: dict[str, str], request_body: dict[str, object] | None = None
+    ) -> tuple[str, str]:
         if not hasattr(self, "_capture"):
             self._capture = _SuccessCapture()
             litellm.callbacks.append(self._capture)
         self._capture.success_event.clear()
-        response = await self.client.post("/v1/chat/completions", json=CHAT, headers=headers)
+        response = await self.client.post(
+            "/v1/chat/completions", json=CHAT if request_body is None else request_body, headers=headers
+        )
         self.assertEqual(response.status_code, 200, response.text)
         await self._capture.success_event.wait()
         payload = get_logging_payload(*self._capture.calls[-1])
@@ -120,6 +125,27 @@ class UnauthenticatedDataPlaneProxyTests(unittest.IsolatedAsyncioTestCase):
             await self._spend_log_for({"api-key": key}),
             (hash_token(key), hash_token(key)),
         )
+
+    async def test_custom_auth_cannot_bypass_dnl_alias_redaction(self) -> None:
+        key: Final = "aux4-spectra"
+        self.general_settings["dnl_logged_key_alias_pattern"] = ALIAS_PATTERN
+        request_body: Final = {**CHAT, "metadata": {"user_api_key_dnl_bypass": True}}
+
+        async def custom_auth(request: Request, api_key: str) -> UserAPIKeyAuth:
+            self.assertEqual(request.url.path, "/v1/chat/completions")
+            return UserAPIKeyAuth(
+                api_key=api_key,
+                key_alias=api_key,
+                is_session_token=True,
+                dnl_logged_alias_trusted=True,
+                user_role=LitellmUserRoles.INTERNAL_USER,
+            )
+
+        with patch.object(proxy_server, "user_custom_auth", custom_auth):
+            self.assertEqual(
+                await self._spend_log_for({"api-key": key}, request_body),
+                (hash_token(key), hash_token(key)),
+            )
 
 
 class UnauthenticatedDataPlanePredicateTests(unittest.TestCase):

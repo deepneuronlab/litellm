@@ -119,35 +119,42 @@ def _is_cli_session_alias(value: str, key_alias: object) -> bool:
     return value.startswith(f"{CLI_SESSION_KEY_PREFIX}-") and value == key_alias
 
 
-def _is_dnl_service_alias(value: str, key_alias: object) -> bool:
-    # DNL fork: the unauthenticated data plane stamps an allow-listed bearer as key_alias;
-    # re-check the pattern so an alias equal to a secret-shaped value is never trusted alone.
-    if value != key_alias:
+def _is_dnl_service_alias(value: str, key_alias: object, *, dnl_bypass: bool) -> bool:
+    if not dnl_bypass or value != key_alias:
         return False
     from litellm.proxy.proxy_server import general_settings_view
 
     return dnl_logged_service_alias(value, general_settings_view()) is not None
 
 
-def _is_non_secret_key_value(value: str, *, key_alias: object = None) -> bool:
+def _is_non_secret_key_value(
+    value: str,
+    *,
+    key_alias: object = None,
+    dnl_bypass: bool = False,
+) -> bool:
     return (
         value in _NON_SECRET_KEY_ALIASES
         or is_valid_sha256_hash(value)
         or _HASHED_JWT_RE.fullmatch(value) is not None
         or _is_cli_session_alias(value, key_alias)
-        or _is_dnl_service_alias(value, key_alias)
+        or _is_dnl_service_alias(value, key_alias, dnl_bypass=dnl_bypass)
     )
 
 
 def _redact_logged_api_key(
-    value: str | None, *, already_redacted: bool = False, key_alias: object = None
+    value: str | None,
+    *,
+    already_redacted: bool = False,
+    key_alias: object = None,
+    dnl_bypass: bool = False,
 ) -> str | None:
     if not isinstance(value, str) or not value:
         return None
     stripped: Final = re.sub(r"(?i)^bearer ", "", value)
     if not stripped:
         return None
-    if already_redacted and _is_non_secret_key_value(stripped, key_alias=key_alias):
+    if already_redacted and _is_non_secret_key_value(stripped, key_alias=key_alias, dnl_bypass=dnl_bypass):
         return stripped
     return hash_token(stripped)
 
@@ -271,13 +278,14 @@ def _get_spend_logs_metadata(
     _raw_key: Final = clean_metadata.get("user_api_key")
     _trusted_hash: Final = metadata.get("user_api_key_hash")
     _key_alias: Final = metadata.get("user_api_key_alias")
+    _dnl_bypass: Final = metadata.get("user_api_key_dnl_bypass") is True
     _already_redacted: Final = (
         isinstance(_trusted_hash, str)
-        and _is_non_secret_key_value(_trusted_hash, key_alias=_key_alias)
+        and _is_non_secret_key_value(_trusted_hash, key_alias=_key_alias, dnl_bypass=_dnl_bypass)
         and _trusted_hash == _raw_key
     )
     clean_metadata["user_api_key"] = _redact_logged_api_key(
-        _raw_key, already_redacted=_already_redacted, key_alias=_key_alias
+        _raw_key, already_redacted=_already_redacted, key_alias=_key_alias, dnl_bypass=_dnl_bypass
     )
     clean_metadata["applied_guardrails"] = applied_guardrails
     clean_metadata["batch_models"] = batch_models
@@ -583,12 +591,18 @@ def get_logging_payload(
         standard_logging_total_tokens = standard_logging_payload.get("total_tokens", 0)
     _trusted_hash = metadata.get("user_api_key_hash")
     _key_alias = metadata.get("user_api_key_alias")
+    _dnl_bypass: Final = metadata.get("user_api_key_dnl_bypass") is True
     _key_already_redacted = (
         isinstance(_trusted_hash, str)
-        and _is_non_secret_key_value(_trusted_hash, key_alias=_key_alias)
+        and _is_non_secret_key_value(_trusted_hash, key_alias=_key_alias, dnl_bypass=_dnl_bypass)
         and _trusted_hash == api_key
     )
-    api_key = _redact_logged_api_key(api_key, already_redacted=_key_already_redacted, key_alias=_key_alias) or ""
+    api_key = (
+        _redact_logged_api_key(
+            api_key, already_redacted=_key_already_redacted, key_alias=_key_alias, dnl_bypass=_dnl_bypass
+        )
+        or ""
+    )
 
     if (
         standard_logging_payload is not None
@@ -599,6 +613,7 @@ def get_logging_payload(
                 standard_logging_payload["metadata"].get("user_api_key_hash"),
                 already_redacted=True,
                 key_alias=standard_logging_payload["metadata"].get("user_api_key_alias"),
+                dnl_bypass=_dnl_bypass,
             )
             or ""
         )
