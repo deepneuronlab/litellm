@@ -29,9 +29,11 @@ class _SuccessCapture(CustomLogger):
     def __init__(self):
         super().__init__()
         self.calls: list[tuple] = []
+        self.success_event: Final[asyncio.Event] = asyncio.Event()
 
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
         self.calls.append((kwargs, response_obj, start_time, end_time))
+        self.success_event.set()
 
 
 class UnauthenticatedDataPlaneProxyTests(unittest.IsolatedAsyncioTestCase):
@@ -79,14 +81,10 @@ class UnauthenticatedDataPlaneProxyTests(unittest.IsolatedAsyncioTestCase):
         if not hasattr(self, "_capture"):
             self._capture = _SuccessCapture()
             litellm.callbacks.append(self._capture)
-        seen = len(self._capture.calls)
+        self._capture.success_event.clear()
         response = await self.client.post("/v1/chat/completions", json=CHAT, headers=headers)
         self.assertEqual(response.status_code, 200, response.text)
-        for _ in range(100):
-            if len(self._capture.calls) > seen:
-                break
-            await asyncio.sleep(0.05)
-        self.assertGreater(len(self._capture.calls), seen, "success callback never ran")
+        await self._capture.success_event.wait()
         payload = get_logging_payload(*self._capture.calls[-1])
         return payload["api_key"], json.loads(payload["metadata"])["user_api_key"]
 
