@@ -1,6 +1,8 @@
 """DNL fork: general_settings.dnl_unauthenticated_llm_routes keeps the master key on the
 Admin UI / management API while the model-serving surface stays anonymous."""
 
+import asyncio
+import json
 import os
 import unittest
 from unittest.mock import patch
@@ -10,12 +12,25 @@ os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 import httpx
 
 import litellm
+from litellm.integrations.custom_logger import CustomLogger
 from litellm.proxy import proxy_server
 from litellm.proxy._types import LiteLLMRoutes
 from litellm.proxy.auth.auth_utils import dnl_route_is_unauthenticated_data_plane
+from litellm.proxy.spend_tracking.spend_tracking_utils import get_logging_payload
+from litellm.proxy.utils import hash_token
 
 FLAG_ON = {"dnl_unauthenticated_llm_routes": True}
 CHAT = {"model": "chat", "messages": [{"role": "user", "content": "hi"}]}
+ALIAS_PATTERN = r"(dev|aux([1-9]|10))-(anexo|delphi|spectra|mentat)"
+
+
+class _SuccessCapture(CustomLogger):
+    def __init__(self):
+        super().__init__()
+        self.calls: list[tuple] = []
+
+    async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+        self.calls.append((kwargs, response_obj, start_time, end_time))
 
 
 class UnauthenticatedDataPlaneProxyTests(unittest.IsolatedAsyncioTestCase):
@@ -58,6 +73,40 @@ class UnauthenticatedDataPlaneProxyTests(unittest.IsolatedAsyncioTestCase):
         self.general_settings.clear()
         response = await self.client.post("/v1/chat/completions", json=CHAT)
         self.assertEqual(response.status_code, 401, response.text)
+
+    async def _spend_log_for(self, headers: dict[str, str]) -> tuple[str, str]:
+        """Return (SpendLogs api_key, metadata user_api_key) for one request."""
+        if not hasattr(self, "_capture"):
+            self._capture = _SuccessCapture()
+            litellm.callbacks.append(self._capture)
+        seen = len(self._capture.calls)
+        response = await self.client.post("/v1/chat/completions", json=CHAT, headers=headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        for _ in range(100):
+            if len(self._capture.calls) > seen:
+                break
+            await asyncio.sleep(0.05)
+        self.assertGreater(len(self._capture.calls), seen, "success callback never ran")
+        payload = get_logging_payload(*self._capture.calls[-1])
+        return payload["api_key"], json.loads(payload["metadata"])["user_api_key"]
+
+    async def test_allow_listed_service_alias_is_logged_readable(self):
+        self.general_settings["dnl_logged_key_alias_pattern"] = ALIAS_PATTERN
+        for headers in ({"api-key": "aux4-spectra"}, {"Authorization": "Bearer aux4-spectra"}):
+            with self.subTest(headers=headers):
+                self.assertEqual(await self._spend_log_for(headers), ("aux4-spectra", "aux4-spectra"))
+
+    async def test_keys_outside_the_alias_pattern_are_still_hashed(self):
+        self.general_settings["dnl_logged_key_alias_pattern"] = ALIAS_PATTERN
+        for key in ("aux4-spectra-x", "prod-anexo", "sk-not-an-alias", "6f1ed002ab5595859014ebf0951522d9"):
+            with self.subTest(key=key):
+                self.assertEqual(await self._spend_log_for({"api-key": key}), (hash_token(key), hash_token(key)))
+
+    async def test_service_alias_is_hashed_without_a_configured_pattern(self):
+        self.assertEqual(
+            await self._spend_log_for({"api-key": "aux4-spectra"}),
+            (hash_token("aux4-spectra"), hash_token("aux4-spectra")),
+        )
 
 
 class UnauthenticatedDataPlanePredicateTests(unittest.TestCase):

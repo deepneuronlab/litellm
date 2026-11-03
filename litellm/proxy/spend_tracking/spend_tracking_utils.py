@@ -53,6 +53,7 @@ from litellm.proxy._types import (
     SpendLogsPayload,
     SpendLogsRouterMetadata,
 )
+from litellm.proxy.auth.auth_utils import dnl_logged_service_alias
 from litellm.proxy.route_llm_request import ProxyModelNotFoundError
 from litellm.proxy.spend_tracking.spend_log_error_logger import spend_log_error
 from litellm.proxy.utils import PrismaClient, hash_token
@@ -118,12 +119,23 @@ def _is_cli_session_alias(value: str, key_alias: object) -> bool:
     return value.startswith(f"{CLI_SESSION_KEY_PREFIX}-") and value == key_alias
 
 
+def _is_dnl_service_alias(value: str, key_alias: object) -> bool:
+    # DNL fork: the unauthenticated data plane stamps an allow-listed bearer as key_alias;
+    # re-check the pattern so an alias equal to a secret-shaped value is never trusted alone.
+    if value != key_alias:
+        return False
+    from litellm.proxy.proxy_server import general_settings
+
+    return dnl_logged_service_alias(value, general_settings) is not None
+
+
 def _is_non_secret_key_value(value: str, *, key_alias: object = None) -> bool:
     return (
         value in _NON_SECRET_KEY_ALIASES
         or is_valid_sha256_hash(value)
         or _HASHED_JWT_RE.fullmatch(value) is not None
         or _is_cli_session_alias(value, key_alias)
+        or _is_dnl_service_alias(value, key_alias)
     )
 
 

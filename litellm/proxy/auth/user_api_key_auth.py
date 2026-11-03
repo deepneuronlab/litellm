@@ -93,6 +93,7 @@ from litellm.proxy.auth.auth_object_prefetch import (
 )
 from litellm.proxy.auth.auth_utils import (
     abbreviate_api_key,
+    dnl_logged_service_alias,
     dnl_route_is_unauthenticated_data_plane,
     fallback_target_model_name,
     get_end_user_id_from_request_body,
@@ -1957,6 +1958,7 @@ async def user_api_key_auth_builder(
         if dnl_route_is_unauthenticated_data_plane(route=route, general_settings=general_settings):
             return UserAPIKeyAuth(
                 api_key=api_key if isinstance(api_key, str) else None,
+                key_alias=dnl_logged_service_alias(api_key, general_settings),
                 user_role=LitellmUserRoles.INTERNAL_USER,
                 parent_otel_span=parent_otel_span,
             )

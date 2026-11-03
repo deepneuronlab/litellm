@@ -951,6 +951,27 @@ def dnl_route_is_unauthenticated_data_plane(route: str, general_settings: Mappin
     return RouteChecks.check_route_access(route=route, allowed_routes=_DNL_NARROW_DATA_PLANE_ROUTES)
 
 
+@lru_cache(maxsize=8)
+def _dnl_logged_key_alias_regex(pattern: str) -> re.Pattern[str]:
+    return re.compile(pattern)
+
+
+def dnl_logged_service_alias(api_key: object, general_settings: Mapping[str, object] | None) -> str | None:
+    """Return the bearer when it fully matches ``dnl_logged_key_alias_pattern``, else None.
+
+    Our services send a non-secret ``<env>-<service>`` alias as their key on the
+    unauthenticated data plane. Upstream hashes every logged key it cannot prove
+    non-secret, so only bearers matching the operator-configured allow-list pattern are
+    stamped as ``key_alias`` and kept readable in spend logs; anything else stays hashed.
+    """
+    if not isinstance(api_key, str) or not api_key or not general_settings:
+        return None
+    pattern: Final = general_settings.get("dnl_logged_key_alias_pattern")
+    if not isinstance(pattern, str) or not pattern:
+        return None
+    return api_key if _dnl_logged_key_alias_regex(pattern).fullmatch(api_key) else None
+
+
 def get_request_route(request: Request) -> str:
     """
     Resolve the request route from the ASGI scope, with ``root_path`` stripped.
