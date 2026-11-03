@@ -46,6 +46,10 @@ jobs:
           subjectPattern: ^(?![A-Z]).+$
           subjectPatternError: |
             The subject "{subject}" must start with a lowercase character.
+          # DNL fork: titles start with the Linear issue ID, e.g. "SRE-796 feat: port ...".
+          headerPattern: >-
+            ${{ github.repository != 'BerriAI/litellm' && '^[A-Z]+-[0-9]+ (\w*)(?:\(([\w$.\-*/ ]*)\))?: (.*)$' || '' }}
+          headerPatternCorrespondence: ${{ github.repository != 'BerriAI/litellm' && 'type, scope, subject' || '' }}
           # Allow merges/reverts that GitHub generates automatically.
           ignoreLabels: |
             ignore-semantic-pull-request

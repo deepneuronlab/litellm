@@ -452,21 +452,26 @@ class LiteLLMRoutes(enum.Enum):
         "/v1/realtime/transcription_sessions",
         "/openai/v1/realtime/transcription_sessions",
         # responses API
+        "/openai/responses",
         "/responses",
         "/v1/responses",
         "/openai/v1/responses",
         "/responses/{response_id}",
         "/v1/responses/{response_id}",
         "/openai/v1/responses/{response_id}",
+        "/openai/responses/{response_id}",
         "/responses/{response_id}/input_items",
         "/v1/responses/{response_id}/input_items",
         "/openai/v1/responses/{response_id}/input_items",
+        "/openai/responses/{response_id}/input_items",
         "/responses/{response_id}/cancel",
         "/v1/responses/{response_id}/cancel",
         "/openai/v1/responses/{response_id}/cancel",
+        "/openai/responses/{response_id}/cancel",
         "/responses/input_tokens",
         "/v1/responses/input_tokens",
         "/openai/v1/responses/input_tokens",
+        "/openai/responses/input_tokens",
         # vector stores
         "/vector_stores",
         "/v1/vector_stores",
@@ -489,6 +494,8 @@ class LiteLLMRoutes(enum.Enum):
         "/v1/search/{search_tool_name}",
         "/decisions",
         "/v1/decisions",
+        "/openai/v1/decisions",
+        "/openai/decisions",
         "/systemone",
         "/v1/systemone",
         # OCR
@@ -2806,6 +2813,10 @@ class ConfigGeneralSettings(LiteLLMPydanticObjectBase):
     use_google_kms: bool | None = Field(None, description="decrypt keys with google kms")
     use_azure_key_vault: bool | None = Field(None, description="load keys from azure key vault")
     master_key: str | None = Field(None, description="require a key for all calls to proxy")
+    dnl_unauthenticated_llm_routes: bool | None = Field(
+        None,
+        description="allow unauthenticated access to the frozen DNL data-plane route allowlist when master_key is configured; off by default",
+    )
     dangerously_permit_weak_or_unset_master_key: bool | None = Field(
         None,
         description="local development only: start even when master_key is unset, empty, or a publicly known default",
