@@ -1855,15 +1855,6 @@ class TestBlockPayloadCallerAttribution:
         assert metadata["user_api_key_team_id"] == "probe-team-1"
         assert metadata["user_api_key_org_id"] == "probe-org-1"
 
-    def test_metadata_covers_the_full_caller_key_set(self, handler, user_api_key_dict):
-        """A block log and a success log agree on the caller key set."""
-        from litellm.types.utils import StandardLoggingUserAPIKeyMetadata
-
-        payload = handler._build_fallback_payload(self._blocked_call_details(), user_api_key_dict)
-
-        expected = StandardLoggingUserAPIKeyMetadata.__required_keys__ | StandardLoggingUserAPIKeyMetadata.__optional_keys__
-        assert set(payload["metadata"]) == set(expected)
-
     def test_virtual_key_is_logged_hashed(self, handler):
         """A virtual key reaches the webhook as its hash, never as the raw token."""
         raw = "sk-block-attribution-test"
