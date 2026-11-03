@@ -102,6 +102,10 @@ class UnauthenticatedDataPlaneProxyTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(headers=headers):
                 self.assertEqual(await self._spend_log_for(headers), ("aux4-spectra", "aux4-spectra"))
 
+    async def test_explicitly_allowed_sk_alias_is_logged_readable(self) -> None:
+        self.general_settings["dnl_logged_key_alias_pattern"] = "sk-service"
+        self.assertEqual(await self._spend_log_for({"api-key": "sk-service"}), ("sk-service", "sk-service"))
+
     async def test_service_alias_does_not_become_key_policy_identity(self) -> None:
         self.general_settings["dnl_logged_key_alias_pattern"] = ALIAS_PATTERN
         request: Final = Request({"type": "http", "method": "POST", "path": "/v1/chat/completions", "headers": []})

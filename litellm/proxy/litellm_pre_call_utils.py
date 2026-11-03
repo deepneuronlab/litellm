@@ -1699,6 +1699,8 @@ class LiteLLMProxyRequestSetup:
 
     @staticmethod
     def get_logged_api_key(user_api_key_dict: UserAPIKeyAuth) -> str | None:
+        if user_api_key_dict.dnl_logged_alias is not None:
+            return user_api_key_dict.dnl_logged_alias
         if user_api_key_dict.is_session_token and user_api_key_dict.key_alias:
             return user_api_key_dict.key_alias
         return user_api_key_dict.api_key
