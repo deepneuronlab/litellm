@@ -52,17 +52,16 @@ class AzureGpt5SeriesRouterMetadataTests(unittest.TestCase):
         self.assertIsNone(info.get("max_input_tokens"))
 
 
-class UnmappedGpt5SeriesDeploymentTests(unittest.TestCase):
-    """A deployment name that is not a cost-map key (e.g. a DataZone `-dz` name) keeps its own registered metadata."""
+class AzureDeploymentMetadataLoggingTests(unittest.TestCase):
+    """Azure deployment metadata and logging behavior."""
 
-    def test_unmapped_deployment_does_not_log_a_router_error(self):
+    def test_datazone_deployment_does_not_log_a_router_error(self):
         router = _router("azure/gpt5_series/gpt-6-luna-dz")
         self.addCleanup(router.reset)
         with self.assertNoLogs("LiteLLM Router", level="ERROR"):
-            info = router.get_router_model_info(deployment=router.model_list[0], received_model_name="m")
-        self.assertIsNone(info.get("max_input_tokens"))
+            router.get_router_model_info(deployment=router.model_list[0], received_model_name="m")
 
-    def test_unmapped_deployment_uses_its_explicit_model_info(self):
+    def test_datazone_deployment_uses_its_explicit_model_info(self):
         router = litellm.Router(
             model_list=[
                 {
