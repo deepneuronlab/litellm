@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import unittest
+from typing import Final
 from unittest.mock import patch
 
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
@@ -112,6 +113,14 @@ class UnauthenticatedDataPlaneProxyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             await self._spend_log_for({"api-key": "aux4-spectra"}),
             (hash_token("aux4-spectra"), hash_token("aux4-spectra")),
+        )
+
+    async def test_pathological_pattern_keeps_keys_hashed_and_serving(self) -> None:
+        key: Final = "g" * 63 + "h"
+        self.general_settings["dnl_logged_key_alias_pattern"] = "(g|gg)+$"
+        self.assertEqual(
+            await self._spend_log_for({"api-key": key}),
+            (hash_token(key), hash_token(key)),
         )
 
 

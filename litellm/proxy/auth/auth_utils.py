@@ -7,6 +7,7 @@ from functools import lru_cache
 from logging import Logger
 from typing import Any, Final, Protocol
 
+import regex
 from fastapi import HTTPException, Request, status
 from pydantic import PositiveInt, TypeAdapter, ValidationError
 
@@ -952,13 +953,14 @@ def dnl_route_is_unauthenticated_data_plane(route: str, general_settings: Mappin
 
 
 _DNL_LOGGED_ALIAS_SHAPE: Final = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_DNL_LOGGED_ALIAS_MATCH_TIMEOUT_SECONDS: Final = 0.01
 
 
 @lru_cache(maxsize=8)
-def _dnl_logged_key_alias_regex(pattern: str) -> re.Pattern[str] | None:
+def _dnl_logged_key_alias_regex(pattern: str) -> regex.Pattern[str] | None:
     try:
-        return re.compile(pattern)
-    except re.error as exc:
+        return regex.compile(pattern)
+    except regex.error as exc:
         verbose_proxy_logger.error("dnl_logged_key_alias_pattern is not a valid regex, keys stay hashed: %s", exc)
         return None
 
@@ -979,7 +981,16 @@ def dnl_logged_service_alias(api_key: object, general_settings: Mapping[str, obj
     if not isinstance(pattern, str) or not pattern or _DNL_LOGGED_ALIAS_SHAPE.fullmatch(api_key) is None:
         return None
     compiled: Final = _dnl_logged_key_alias_regex(pattern)
-    return api_key if compiled is not None and compiled.fullmatch(api_key) is not None else None
+    if compiled is None:
+        return None
+    try:
+        return (
+            api_key
+            if compiled.fullmatch(api_key, timeout=_DNL_LOGGED_ALIAS_MATCH_TIMEOUT_SECONDS) is not None
+            else None
+        )
+    except TimeoutError:
+        return None
 
 
 def get_request_route(request: Request) -> str:
