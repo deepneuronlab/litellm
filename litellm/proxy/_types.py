@@ -2817,6 +2817,10 @@ class ConfigGeneralSettings(LiteLLMPydanticObjectBase):
         None,
         description="allow unauthenticated access to the frozen DNL data-plane route allowlist when master_key is configured; off by default",
     )
+    dnl_logged_key_alias_pattern: str | None = Field(
+        None,
+        description="full-match regex for DNL service aliases that may remain readable in spend logs",
+    )
     dangerously_permit_weak_or_unset_master_key: bool | None = Field(
         None,
         description="local development only: start even when master_key is unset, empty, or a publicly known default",

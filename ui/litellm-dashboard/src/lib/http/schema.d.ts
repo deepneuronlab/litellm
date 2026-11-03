@@ -30423,6 +30423,16 @@ export interface components {
              */
             disable_responses_id_security?: boolean | null;
             /**
+             * Dnl Logged Key Alias Pattern
+             * @description full-match regex for DNL service aliases that may remain readable in spend logs
+             */
+            dnl_logged_key_alias_pattern?: string | null;
+            /**
+             * Dnl Unauthenticated Llm Routes
+             * @description allow unauthenticated access to the frozen DNL data-plane route allowlist when master_key is configured; off by default
+             */
+            dnl_unauthenticated_llm_routes?: boolean | null;
+            /**
              * Enable Claude Code Gateway
              * @description serve the Claude Code gateway protocol (https://code.claude.com/docs/en/claude-apps-gateway) under /claude_code_gateway: OAuth device-flow sign-in reusing proxy SSO, plus managed settings and OTLP telemetry ingestion. Off by default
              */

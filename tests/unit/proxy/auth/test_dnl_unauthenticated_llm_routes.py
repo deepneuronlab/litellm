@@ -14,7 +14,7 @@ import httpx
 import litellm
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.proxy import proxy_server
-from litellm.proxy._types import LiteLLMRoutes
+from litellm.proxy._types import ConfigGeneralSettings, LiteLLMRoutes
 from litellm.proxy.auth.auth_utils import dnl_logged_service_alias, dnl_route_is_unauthenticated_data_plane
 from litellm.proxy.spend_tracking.spend_tracking_utils import get_logging_payload
 from litellm.proxy.utils import hash_token
@@ -75,7 +75,6 @@ class UnauthenticatedDataPlaneProxyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 401, response.text)
 
     async def _spend_log_for(self, headers: dict[str, str]) -> tuple[str, str]:
-        """Return (SpendLogs api_key, metadata user_api_key) for one request."""
         if not hasattr(self, "_capture"):
             self._capture = _SuccessCapture()
             litellm.callbacks.append(self._capture)
@@ -170,6 +169,10 @@ class DnlLoggedServiceAliasTests(unittest.TestCase):
         for key in ("a" * 65, "aux4 spectra", "aux4.spectra", "aux4/spectra", ""):
             with self.subTest(key=key):
                 self.assertIsNone(dnl_logged_service_alias(key, settings))
+
+    def test_pattern_survives_general_settings_validation(self):
+        settings = ConfigGeneralSettings.model_validate({"dnl_logged_key_alias_pattern": ALIAS_PATTERN})
+        self.assertEqual(dnl_logged_service_alias("aux4-spectra", settings.model_dump()), "aux4-spectra")
 
 
 if __name__ == "__main__":
