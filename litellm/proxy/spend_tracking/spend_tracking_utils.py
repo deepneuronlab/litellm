@@ -119,6 +119,10 @@ def _is_cli_session_alias(value: str, key_alias: object) -> bool:
     return value.startswith(f"{CLI_SESSION_KEY_PREFIX}-") and value == key_alias
 
 
+def _get_logged_alias_context(metadata: Mapping[str, object]) -> tuple[object, bool]:
+    return metadata.get("user_api_key_alias"), metadata.get("user_api_key_dnl_bypass") is True
+
+
 def _is_dnl_service_alias(value: str, key_alias: object, *, dnl_bypass: bool) -> bool:
     if not dnl_bypass or value != key_alias:
         return False
@@ -277,8 +281,7 @@ def _get_spend_logs_metadata(
     )
     _raw_key: Final = clean_metadata.get("user_api_key")
     _trusted_hash: Final = metadata.get("user_api_key_hash")
-    _key_alias: Final = metadata.get("user_api_key_alias")
-    _dnl_bypass: Final = metadata.get("user_api_key_dnl_bypass") is True
+    _key_alias, _dnl_bypass = _get_logged_alias_context(metadata)
     _already_redacted: Final = (
         isinstance(_trusted_hash, str)
         and _is_non_secret_key_value(_trusted_hash, key_alias=_key_alias, dnl_bypass=_dnl_bypass)
@@ -590,8 +593,7 @@ def get_logging_payload(
         standard_logging_completion_tokens = standard_logging_payload.get("completion_tokens", 0)
         standard_logging_total_tokens = standard_logging_payload.get("total_tokens", 0)
     _trusted_hash = metadata.get("user_api_key_hash")
-    _key_alias = metadata.get("user_api_key_alias")
-    _dnl_bypass: Final = metadata.get("user_api_key_dnl_bypass") is True
+    _key_alias, _dnl_bypass = _get_logged_alias_context(metadata)
     _key_already_redacted = (
         isinstance(_trusted_hash, str)
         and _is_non_secret_key_value(_trusted_hash, key_alias=_key_alias, dnl_bypass=_dnl_bypass)

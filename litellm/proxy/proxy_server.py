@@ -17522,8 +17522,8 @@ async def async_queue_request(
         _headers: Final = safe_get_request_headers(request).copy()
         _headers.pop("authorization", None)  # do not store the original `sk-..` api key in the db
         data["metadata"]["headers"] = _headers
-        data["metadata"]["user_api_key_alias"] = getattr(user_api_key_dict, "key_alias", None)
-        data["metadata"]["user_api_key_dnl_bypass"] = user_api_key_dict.dnl_logged_alias_trusted
+        data["metadata"]["user_api_key_alias"] = user_api_key_dict.dnl_logged_alias or user_api_key_dict.key_alias
+        data["metadata"]["user_api_key_dnl_bypass"] = user_api_key_dict.dnl_logged_alias is not None
         data["metadata"]["user_api_key_user_id"] = user_api_key_dict.user_id
         data["metadata"]["user_api_key_team_id"] = getattr(user_api_key_dict, "team_id", None)
         data["metadata"]["user_api_key_object_permission_id"] = getattr(user_api_key_dict, "object_permission_id", None)

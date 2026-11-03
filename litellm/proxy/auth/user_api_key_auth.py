@@ -1960,11 +1960,10 @@ async def user_api_key_auth_builder(
             dnl_alias: Final = dnl_logged_service_alias(api_key, general_settings_view())
             user_api_key_auth_obj: Final = UserAPIKeyAuth(
                 api_key=api_key if isinstance(api_key, str) else None,
-                key_alias=dnl_alias,
                 user_role=LitellmUserRoles.INTERNAL_USER,
                 parent_otel_span=parent_otel_span,
             )
-            user_api_key_auth_obj.dnl_logged_alias_trusted = dnl_alias is not None
+            user_api_key_auth_obj.dnl_logged_alias = dnl_alias
             return user_api_key_auth_obj
         if master_key is None:
             if isinstance(api_key, str):

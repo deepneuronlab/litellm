@@ -1711,8 +1711,8 @@ class LiteLLMProxyRequestSetup:
         auth_metadata: Final = cast("dict[str, str] | None", stripped_metadata)  # cast-ok: metadata is free-form JSON
         user_api_key_logged_metadata: Final = StandardLoggingUserAPIKeyMetadata(
             user_api_key_hash=LiteLLMProxyRequestSetup.get_logged_api_key(user_api_key_dict),
-            user_api_key_alias=user_api_key_dict.key_alias,
-            user_api_key_dnl_bypass=user_api_key_dict.dnl_logged_alias_trusted,
+            user_api_key_alias=user_api_key_dict.dnl_logged_alias or user_api_key_dict.key_alias,
+            user_api_key_dnl_bypass=user_api_key_dict.dnl_logged_alias is not None,
             user_api_key_spend=user_api_key_dict.spend,
             user_api_key_max_budget=user_api_key_dict.max_budget,
             user_api_key_user_spend=user_api_key_dict.user_spend,

@@ -19,6 +19,7 @@ from litellm.integrations.custom_logger import CustomLogger
 from litellm.proxy import proxy_server
 from litellm.proxy._types import ConfigGeneralSettings, LitellmUserRoles, LiteLLMRoutes, UserAPIKeyAuth
 from litellm.proxy.auth.auth_utils import dnl_logged_service_alias, dnl_route_is_unauthenticated_data_plane
+from litellm.proxy.auth.user_api_key_auth import user_api_key_auth_builder
 from litellm.proxy.litellm_pre_call_utils import LiteLLMProxyRequestSetup
 from litellm.proxy.spend_tracking.spend_tracking_utils import get_logging_payload
 from litellm.proxy.utils import hash_token
@@ -101,6 +102,21 @@ class UnauthenticatedDataPlaneProxyTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(headers=headers):
                 self.assertEqual(await self._spend_log_for(headers), ("aux4-spectra", "aux4-spectra"))
 
+    async def test_service_alias_does_not_become_key_policy_identity(self) -> None:
+        self.general_settings["dnl_logged_key_alias_pattern"] = ALIAS_PATTERN
+        request: Final = Request({"type": "http", "method": "POST", "path": "/v1/chat/completions", "headers": []})
+        auth: Final = await user_api_key_auth_builder(
+            request=request,
+            api_key="Bearer aux4-spectra",
+            azure_api_key_header="",
+            anthropic_api_key_header=None,
+            google_ai_studio_api_key_header=None,
+            azure_apim_header=None,
+            request_data=CHAT,
+        )
+        self.assertIsNone(auth.key_alias)
+        self.assertEqual(auth.dnl_logged_alias, "aux4-spectra")
+
     async def test_keys_outside_the_alias_pattern_are_still_hashed(self):
         self.general_settings["dnl_logged_key_alias_pattern"] = ALIAS_PATTERN
         for key in ("aux4-spectra-x", "prod-anexo", "sk-not-an-alias", "6f1ed002ab5595859014ebf0951522d9"):
@@ -139,7 +155,7 @@ class UnauthenticatedDataPlaneProxyTests(unittest.IsolatedAsyncioTestCase):
                 api_key=api_key,
                 key_alias=api_key,
                 is_session_token=True,
-                dnl_logged_alias_trusted=True,
+                dnl_logged_alias=key,
                 user_role=LitellmUserRoles.INTERNAL_USER,
             )
 
@@ -215,7 +231,7 @@ class DnlLoggedServiceAliasTests(unittest.TestCase):
         with patch.object(proxy_server, "general_settings", {"dnl_logged_key_alias_pattern": ALIAS_PATTERN}):
             for trusted in (False, True):
                 auth: Final = UserAPIKeyAuth(api_key=key, key_alias=key)
-                auth.dnl_logged_alias_trusted = trusted
+                auth.dnl_logged_alias = key if trusted else None
                 metadata: Final = {
                     **LiteLLMProxyRequestSetup.get_sanitized_user_information_from_key(auth),
                     "user_api_key": key,
