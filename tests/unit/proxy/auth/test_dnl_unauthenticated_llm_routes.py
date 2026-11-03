@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import unittest
+from datetime import datetime, timezone
 from typing import Final
 from unittest.mock import patch
 
@@ -18,6 +19,7 @@ from litellm.integrations.custom_logger import CustomLogger
 from litellm.proxy import proxy_server
 from litellm.proxy._types import ConfigGeneralSettings, LitellmUserRoles, LiteLLMRoutes, UserAPIKeyAuth
 from litellm.proxy.auth.auth_utils import dnl_logged_service_alias, dnl_route_is_unauthenticated_data_plane
+from litellm.proxy.litellm_pre_call_utils import LiteLLMProxyRequestSetup
 from litellm.proxy.spend_tracking.spend_tracking_utils import get_logging_payload
 from litellm.proxy.utils import hash_token
 
@@ -206,6 +208,23 @@ class DnlLoggedServiceAliasTests(unittest.TestCase):
     def test_pattern_survives_general_settings_validation(self):
         settings = ConfigGeneralSettings.model_validate({"dnl_logged_key_alias_pattern": ALIAS_PATTERN})
         self.assertEqual(dnl_logged_service_alias("aux4-spectra", settings.model_dump()), "aux4-spectra")
+
+    def test_direct_metadata_builder_preserves_only_trusted_aliases(self) -> None:
+        key: Final = "aux4-spectra"
+        now: Final = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        with patch.object(proxy_server, "general_settings", {"dnl_logged_key_alias_pattern": ALIAS_PATTERN}):
+            for trusted in (False, True):
+                auth: Final = UserAPIKeyAuth(api_key=key, key_alias=key)
+                auth.dnl_logged_alias_trusted = trusted
+                metadata: Final = {
+                    **LiteLLMProxyRequestSetup.get_sanitized_user_information_from_key(auth),
+                    "user_api_key": key,
+                    "status": "failure",
+                }
+                payload: Final = get_logging_payload({"litellm_params": {"metadata": metadata}}, {}, now, now)
+                expected: Final = key if trusted else hash_token(key)
+                self.assertEqual(payload["api_key"], expected)
+                self.assertEqual(json.loads(payload["metadata"])["user_api_key"], expected)
 
 
 if __name__ == "__main__":

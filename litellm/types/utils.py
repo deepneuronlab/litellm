@@ -2928,6 +2928,7 @@ class AdapterCompletionStreamWrapper:
 class StandardLoggingUserAPIKeyMetadata(TypedDict):
     user_api_key_hash: str | None  # hash of the litellm virtual key used
     user_api_key_alias: str | None
+    user_api_key_dnl_bypass: ReadOnly[NotRequired[bool]]
     user_api_key_spend: float | None
     user_api_key_max_budget: float | None
     user_api_key_budget_reset_at: str | None
