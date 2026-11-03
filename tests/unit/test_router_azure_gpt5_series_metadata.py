@@ -52,5 +52,37 @@ class AzureGpt5SeriesRouterMetadataTests(unittest.TestCase):
         self.assertIsNone(info.get("max_input_tokens"))
 
 
+class AzureDeploymentMetadataLoggingTests(unittest.TestCase):
+    """Azure deployment metadata and logging behavior."""
+
+    def test_datazone_deployment_does_not_log_a_router_error(self):
+        router = _router("azure/gpt5_series/gpt-6-luna-dz")
+        self.addCleanup(router.reset)
+        with self.assertNoLogs("LiteLLM Router", level="ERROR"):
+            router.get_router_model_info(deployment=router.model_list[0], received_model_name="m")
+
+    def test_datazone_deployment_uses_its_explicit_model_info(self):
+        router = litellm.Router(
+            model_list=[
+                {
+                    "model_name": "m",
+                    "litellm_params": {"model": "azure/gpt5_series/gpt-6-luna-dz", **DEPLOYMENT},
+                    "model_info": {"max_input_tokens": 1234},
+                }
+            ],
+            num_retries=0,
+        )
+        self.addCleanup(router.reset)
+        info = router.get_router_model_info(deployment=router.model_list[0], received_model_name="m")
+        self.assertEqual(info["max_input_tokens"], 1234)
+
+    def test_unmapped_name_without_the_selector_still_reports_an_error(self):
+        router = _router("azure/my-unmapped-deployment")
+        self.addCleanup(router.reset)
+        with self.assertLogs("LiteLLM Router", level="ERROR") as logs:
+            router.get_router_model_info(deployment=router.model_list[0], received_model_name="m")
+        self.assertIn("Could not identify azure model", logs.output[0])
+
+
 if __name__ == "__main__":
     unittest.main()
