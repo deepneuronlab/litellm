@@ -125,6 +125,13 @@ graph TD
 - `router.py` - Load balancing, fallbacks
 - `router_strategy/` - Routing algorithms (`lowest_latency.py`, `simple_shuffle.py`, etc.)
 
+Router context-window prechecks distinguish embedding inputs from Chat Completions
+and Responses inputs. Embedding token arrays are already tokenized; text inputs are
+counted without chat-message framing. For a batch, the largest individual input is
+checked against each deployment's context window, not the sum of the batch. Async
+counting stays off the event loop. Chat and Responses retain their system, tool and
+instruction token accounting
+
 **LLM-specific proxy endpoints:**
 
 | Endpoint | Directory | Purpose |

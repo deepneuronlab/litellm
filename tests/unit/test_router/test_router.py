@@ -6486,6 +6486,87 @@ def test_count_pre_call_check_tokens_across_api_surfaces():
         router._count_pre_call_check_tokens(messages=None, input=None)
 
 
+def _embedding_context_router(
+    routing_strategy: Literal["simple-shuffle", "usage-based-routing"] = "simple-shuffle",
+) -> Router:
+    return Router(
+        model_list=[
+            {
+                "model_name": "embedding-precheck",
+                "litellm_params": {"model": "text-embedding-3-large", "api_key": "test-key"},
+                "model_info": {"max_input_tokens": 3},
+            }
+        ],
+        routing_strategy=routing_strategy,
+        enable_pre_call_checks=True,
+        num_retries=0,
+    )
+
+
+@pytest.mark.parametrize(
+    "embedding_input, expected_tokens",
+    [
+        pytest.param([11, 12, 13], 3, id="token-vector"),
+        pytest.param([[11, 12], [13, 14, 15]], 3, id="token-batch"),
+    ],
+)
+def test_embedding_context_count_uses_token_ids_without_chat_overhead(
+    embedding_input: list[int] | list[list[int]], expected_tokens: int
+) -> None:
+    router: Final = _embedding_context_router()
+    count: Final = router._count_pre_call_check_tokens(messages=None, input=embedding_input, is_embedding=True)
+    assert count == expected_tokens
+
+
+@pytest.mark.parametrize(
+    "embedding_input",
+    [
+        pytest.param("hello world", id="text"),
+        pytest.param(["hello", "count the longest input in this batch"], id="text-batch"),
+    ],
+)
+def test_embedding_context_count_tokenizes_each_text_independently(
+    embedding_input: str | list[str],
+) -> None:
+    router: Final = _embedding_context_router()
+    texts: Final = (embedding_input,) if isinstance(embedding_input, str) else embedding_input
+    expected_tokens: Final = max(litellm.token_counter(text=text) for text in texts)
+    count: Final = router._count_pre_call_check_tokens(messages=None, input=embedding_input, is_embedding=True)
+    assert count == expected_tokens
+
+
+@pytest.mark.parametrize(
+    "embedding_input",
+    [
+        pytest.param([11, 12, 13, 14], id="token-vector"),
+        pytest.param([[11], [12, 13, 14, 15]], id="token-batch"),
+    ],
+)
+def test_sync_embedding_rejects_an_item_over_its_context_limit(
+    embedding_input: list[int] | list[list[int]],
+) -> None:
+    router: Final = _embedding_context_router()
+    with pytest.raises(litellm.ContextWindowExceededError):
+        router.embedding(model="embedding-precheck", input=embedding_input, mock_response=[0.1, 0.2])
+
+
+@pytest.mark.parametrize("routing_strategy", ["simple-shuffle", "usage-based-routing"])
+@pytest.mark.parametrize(
+    "embedding_input",
+    [
+        pytest.param([11, 12, 13, 14], id="token-vector"),
+        pytest.param([[11], [12, 13, 14, 15]], id="token-batch"),
+    ],
+)
+async def test_async_embedding_rejects_an_item_over_its_context_limit(
+    embedding_input: list[int] | list[list[int]],
+    routing_strategy: Literal["simple-shuffle", "usage-based-routing"],
+) -> None:
+    router: Final = _embedding_context_router(routing_strategy)
+    with pytest.raises(litellm.ContextWindowExceededError):
+        await router.aembedding(model="embedding-precheck", input=embedding_input, mock_response=[0.1, 0.2])
+
+
 def test_pre_call_checks_no_messages_or_input_does_not_crash(monkeypatch):
     """
     When neither messages nor input is provided (e.g. endpoints without prompt text),

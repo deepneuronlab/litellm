@@ -6243,6 +6243,7 @@ class Router:
             deployment: Final = self.get_available_deployment(
                 model=model,
                 input=input,
+                is_embedding=True,
                 specific_deployment=kwargs.pop("specific_deployment", None),
                 request_kwargs=kwargs,
             )
@@ -6319,6 +6320,7 @@ class Router:
             deployment: Final = await self.async_get_available_deployment(
                 model=model,
                 input=input,
+                is_embedding=True,
                 specific_deployment=kwargs.pop("specific_deployment", None),
                 request_kwargs=kwargs,
             )
@@ -12818,11 +12820,23 @@ class Router:
                 client = self.cache.get_cache(key=cache_key, parent_otel_span=parent_otel_span)
                 return client
 
+    @staticmethod
+    def _count_embedding_input_tokens(input: str | Sequence[object]) -> int:
+        if isinstance(input, str):
+            return litellm.token_counter(text=input)
+        if not input or isinstance(input[0], int):
+            return len(input)
+        items: Final = cast(
+            Sequence[str | Sequence[int]], input
+        )  # cast-ok: embedding batches exclude standalone token IDs
+        return max(litellm.token_counter(text=item) if isinstance(item, str) else len(item) for item in items)
+
     def _count_pre_call_check_tokens(
         self,
         messages: Sequence[Mapping[str, object]] | None,
-        input: str | list[object] | None,
+        input: str | Sequence[object] | None,
         request_kwargs: Mapping[str, object] | None = None,
+        is_embedding: bool = False,
     ) -> int:
         """
         Count input tokens for context-window pre-call checks.
@@ -12833,10 +12847,16 @@ class Router:
         LiteLLMCompletionResponsesConfig transform so the same token_counter path covers
         both API surfaces and `instructions` tokens are included in the count.
 
+        Embeddings use the largest input's token count, without chat-message overhead.
+        A batch shares a request, not an individual input's context-window limit.
+
         Prompt content the message list never carries is read from `request_kwargs`:
         `tools` (Chat Completions, Responses and Anthropic Messages shapes) and the
         Anthropic Messages top-level `system` block.
         """
+        if is_embedding and input is not None:
+            return self._count_embedding_input_tokens(input)
+
         from litellm.llms.anthropic.pass_through.messages.utils import (
             anthropic_system_to_openai_message,
         )
@@ -12906,6 +12926,7 @@ class Router:
         messages: Sequence[Mapping[str, str]] | None,
         input: str | Sequence[object] | None,
         request_kwargs: Mapping[str, object] | None,
+        is_embedding: bool = False,
     ) -> int | None:
         """Count input tokens off the event loop, so a multi-MB prompt cannot stall the proxy.
 
@@ -12922,6 +12943,7 @@ class Router:
                 messages=cast(list[dict[str, str]] | None, messages),  # cast-ok: forwarded to the sync counter
                 input=cast(str | list | None, input),  # cast-ok: forwarded to the sync counter
                 request_kwargs=request_kwargs,
+                is_embedding=is_embedding,
             )
         except Exception as e:  # noqa: BLE001  # best-effort: an uncountable prompt must not fail the request
             verbose_router_logger.error(
@@ -12938,6 +12960,7 @@ class Router:
         request_kwargs: dict | None = None,
         input_token_count: int | None = None,
         skip_inline_token_count: bool = False,
+        is_embedding: bool = False,
     ):
         """
         Filter out model in model group, if:
@@ -13000,7 +13023,10 @@ class Router:
                             return _returned_deployments
                         try:
                             input_tokens = self._count_pre_call_check_tokens(
-                                messages=messages, input=input, request_kwargs=request_kwargs
+                                messages=messages,
+                                input=input,
+                                request_kwargs=request_kwargs,
+                                is_embedding=is_embedding,
                             )
                         except Exception as e:
                             verbose_router_logger.error(
@@ -13491,6 +13517,7 @@ class Router:
         specific_deployment: bool | None = False,
         parent_otel_span: Span | None = None,
         health_check_probe: bool = False,
+        is_embedding: bool = False,
     ) -> list[dict] | dict:
         """
         Get the healthy deployments for a model.
@@ -13593,8 +13620,10 @@ class Router:
                     messages=messages,
                     input=input,
                     request_kwargs=request_kwargs,
+                    is_embedding=is_embedding,
                 ),
                 skip_inline_token_count=True,
+                is_embedding=is_embedding,
             )
         # check if user wants to do tag based routing
         healthy_deployments = await get_deployments_for_tag(
@@ -13776,6 +13805,7 @@ class Router:
         messages: list[dict[str, str]] | None = None,
         input: str | list | None = None,
         specific_deployment: bool | None = False,
+        is_embedding: bool = False,
     ):
         """
         Async implementation of 'get_available_deployments'.
@@ -13789,6 +13819,7 @@ class Router:
                 messages=messages,
                 input=input,
                 specific_deployment=specific_deployment,
+                is_embedding=is_embedding,
             )
 
     async def _async_get_available_deployment(
@@ -13798,6 +13829,7 @@ class Router:
         messages: list[dict[str, str]] | None,
         input: str | list | None,
         specific_deployment: bool | None,
+        is_embedding: bool = False,
     ):
         if (
             self.routing_strategy != "usage-based-routing-v2"
@@ -13812,6 +13844,7 @@ class Router:
                 input=input,
                 specific_deployment=specific_deployment,
                 request_kwargs=request_kwargs,
+                is_embedding=is_embedding,
             )
         try:
             parent_otel_span: Final = get_parent_otel_span_from_kwargs(request_kwargs)
@@ -13859,6 +13892,7 @@ class Router:
                     input=input,
                     specific_deployment=specific_deployment,
                     parent_otel_span=parent_otel_span,
+                    is_embedding=is_embedding,
                 )
             if isinstance(healthy_deployments, dict):
                 await self._async_override_selector_pre_call_check(
@@ -14718,6 +14752,7 @@ class Router:
         input: str | list | None = None,
         specific_deployment: bool | None = False,
         request_kwargs: dict | None = None,
+        is_embedding: bool = False,
     ):
         """
         Returns the deployment based on routing strategy
@@ -14792,6 +14827,7 @@ class Router:
                 messages=messages,
                 input=input,
                 request_kwargs=request_kwargs,
+                is_embedding=is_embedding,
             )
 
         ## ORDER FILTERING ## -> if user set 'order' in deployments, return deployments with lowest order (e.g. order=1 > order=2)
