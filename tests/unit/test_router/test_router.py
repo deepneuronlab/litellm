@@ -6545,10 +6545,12 @@ def test_embedding_context_count_tokenizes_each_text_independently(
     [
         pytest.param([11, 12, 13, 14], id="token-vector"),
         pytest.param([[11], [12, 13, 14, 15]], id="token-batch"),
+        pytest.param([["hello world hello world"]], id="nested-text"),
+        pytest.param([["hello world", "hello world"]], id="combined-text"),
     ],
 )
 def test_sync_embedding_rejects_an_item_over_its_context_limit(
-    embedding_input: list[int] | list[list[int]],
+    embedding_input: list[int] | list[list[int]] | list[list[str]],
 ) -> None:
     router: Final = _embedding_context_router()
     with pytest.raises(litellm.ContextWindowExceededError):
@@ -6561,10 +6563,12 @@ def test_sync_embedding_rejects_an_item_over_its_context_limit(
     [
         pytest.param([11, 12, 13, 14], id="token-vector"),
         pytest.param([[11], [12, 13, 14, 15]], id="token-batch"),
+        pytest.param([["hello world hello world"]], id="nested-text"),
+        pytest.param([["hello world", "hello world"]], id="combined-text"),
     ],
 )
 async def test_async_embedding_rejects_an_item_over_its_context_limit(
-    embedding_input: list[int] | list[list[int]],
+    embedding_input: list[int] | list[list[int]] | list[list[str]],
     routing_strategy: Literal["simple-shuffle", "usage-based-routing", "lar1"],
 ) -> None:
     router: Final = _embedding_context_router(routing_strategy)

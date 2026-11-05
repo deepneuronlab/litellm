@@ -118,10 +118,7 @@ from litellm.litellm_core_utils.sensitive_data_masker import (
     SensitiveDataMasker,
     mask_sensitive_structure,
 )
-from litellm.litellm_core_utils.token_counter import (
-    offload_token_count,
-    token_counter,  # pyright: ignore[reportUnknownVariableType]  # unused custom_tokenizer parameter has untyped dict keys
-)
+from litellm.litellm_core_utils.token_counter import count_embedding_input_tokens, offload_token_count
 from litellm.llms.anthropic.common_utils import AnthropicModelInfo, anthropic_error_frame_exception
 from litellm.llms.base_llm.passthrough.transformation import replace_path_segment
 from litellm.llms.base_llm.vector_store.transformation import (
@@ -12831,12 +12828,7 @@ class Router:
 
     @staticmethod
     def _count_embedding_input_tokens(input: str | Sequence[object]) -> int:
-        if isinstance(input, str):
-            return token_counter(text=input)
-        if not input or isinstance(input[0], int):
-            return len(input)
-        items: Final = cast(Sequence[str | Sequence[int]], input)  # cast-ok: embedding batches exclude scalar token IDs
-        return max(token_counter(text=item) if isinstance(item, str) else len(item) for item in items)
+        return count_embedding_input_tokens(input)
 
     def _count_pre_call_check_tokens(
         self,

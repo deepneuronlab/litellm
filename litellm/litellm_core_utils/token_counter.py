@@ -12,6 +12,7 @@ import anyio
 import anyio.lowlevel
 import httpx
 import tiktoken
+from pydantic import TypeAdapter
 from typing_extensions import ParamSpec, TypeVar
 
 import litellm
@@ -62,6 +63,10 @@ from litellm.types.llms.openai import (
     OpenAIMessageContentListBlock,
 )
 from litellm.types.utils import Message, SelectTokenizerResponse
+
+_EMBEDDING_CONTENT_ADAPTER: Final[TypeAdapter[OpenAIMessageContentListBlock]] = TypeAdapter(
+    OpenAIMessageContentListBlock
+)
 
 
 def get_modified_max_tokens(
@@ -404,6 +409,27 @@ class _MessageCountParams:
             self.tokens_per_message = 3
             self.tokens_per_name = 1
         self.count_function = _get_count_function(model, custom_tokenizer)
+
+
+def count_embedding_input_tokens(input: str | Sequence[object]) -> int:
+    if isinstance(input, str):
+        return token_counter(text=input)
+    if not input or isinstance(input[0], int):
+        return len(input)
+    count_function: Final = _get_count_function("")
+    return max(_count_embedding_item_tokens(item, count_function) for item in input)
+
+
+def _count_embedding_item_tokens(item: object, count_function: TokenCounterFunction) -> int:
+    if isinstance(item, str):
+        return 0 if litellm.disable_token_counter is True else count_function(item)
+    if isinstance(item, Sequence):
+        parts: Final = cast(Sequence[object], item)  # cast-ok: checked Sequence
+        if not parts or isinstance(parts[0], int):
+            return len(parts)
+        return sum(_count_embedding_item_tokens(part, count_function) for part in parts)
+    content: Final = _EMBEDDING_CONTENT_ADAPTER.validate_python(item)
+    return 0 if litellm.disable_token_counter is True else _count_content_list(count_function, (content,), False, None)
 
 
 def token_counter(
