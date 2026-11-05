@@ -6252,7 +6252,7 @@ class Router:
                     request_kwargs=kwargs,
                 )
             finally:
-                kwargs.pop("_litellm_is_embedding", None)
+                kwargs.pop("_litellm_is_embedding", None)  # pyright: ignore[reportUnknownMemberType]  # untyped kwargs values
             self._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs)
             data: Final = deployment["litellm_params"].copy()
             model_name = data["model"]
@@ -6332,7 +6332,7 @@ class Router:
                     request_kwargs=kwargs,
                 )
             finally:
-                kwargs.pop("_litellm_is_embedding", None)
+                kwargs.pop("_litellm_is_embedding", None)  # pyright: ignore[reportUnknownMemberType]  # untyped kwargs values
             self._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs)
             data: Final = deployment["litellm_params"].copy()
             model_name = data["model"]
