@@ -118,7 +118,10 @@ from litellm.litellm_core_utils.sensitive_data_masker import (
     SensitiveDataMasker,
     mask_sensitive_structure,
 )
-from litellm.litellm_core_utils.token_counter import offload_token_count
+from litellm.litellm_core_utils.token_counter import (
+    offload_token_count,
+    token_counter,  # pyright: ignore[reportUnknownVariableType]  # unused custom_tokenizer parameter has untyped dict keys
+)
 from litellm.llms.anthropic.common_utils import AnthropicModelInfo, anthropic_error_frame_exception
 from litellm.llms.base_llm.passthrough.transformation import replace_path_segment
 from litellm.llms.base_llm.vector_store.transformation import (
@@ -6237,29 +6240,26 @@ class Router:
             raise e
 
     def _embedding(self, input: str | list, model: str, **kwargs):
-        specific_deployment: Final = kwargs.pop("specific_deployment", None)
-        request_kwargs: Final = {**kwargs, "_litellm_is_embedding": True}
         model_name = None
         try:
             verbose_router_logger.debug("Inside embedding()- model: %s; kwargs: %s", model, kwargs)
+            kwargs["_litellm_is_embedding"] = True  # rebind-ok: request-local marker is removed in finally
             try:
                 deployment: Final = self.get_available_deployment(
                     model=model,
                     input=input,
-                    specific_deployment=specific_deployment,
-                    request_kwargs=request_kwargs,
+                    specific_deployment=kwargs.pop("specific_deployment", None),
+                    request_kwargs=kwargs,
                 )
             finally:
-                request_kwargs.pop("_litellm_is_embedding", None)
-            self._update_kwargs_with_deployment(deployment=deployment, kwargs=request_kwargs)
+                kwargs.pop("_litellm_is_embedding", None)
+            self._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs)
             data: Final = deployment["litellm_params"].copy()
             model_name = data["model"]
 
-            potential_model_client: Final = self._get_client(
-                deployment=deployment, kwargs=request_kwargs, client_type="sync"
-            )
+            potential_model_client: Final = self._get_client(deployment=deployment, kwargs=kwargs, client_type="sync")
             # check if provided keys == client keys #
-            dynamic_api_key: Final = request_kwargs.get("api_key", None)
+            dynamic_api_key: Final = kwargs.get("api_key", None)
             if (
                 dynamic_api_key is not None
                 and potential_model_client is not None
@@ -6280,7 +6280,7 @@ class Router:
                     "input": input,
                     "caching": self.cache_responses,
                     "client": model_client,
-                    **request_kwargs,
+                    **kwargs,
                 }
             )
             self.success_calls[model_name] += 1
@@ -6290,7 +6290,7 @@ class Router:
             verbose_router_logger.info("litellm.embedding(model=%s)\x1b[31m Exception %s\x1b[0m", model_name, e)
             if model_name is not None:
                 self.fail_calls[model_name] += 1
-            self._stamp_retry_skip_deployment_id(e, request_kwargs)
+            self._stamp_retry_skip_deployment_id(e, kwargs)
             raise e
 
     async def aembedding(
@@ -6319,40 +6319,37 @@ class Router:
             raise e
 
     async def _aembedding(self, input: str | list, model: str, **kwargs):
-        specific_deployment: Final = kwargs.pop("specific_deployment", None)
-        request_kwargs: Final = {**kwargs, "_litellm_is_embedding": True}
         model_name = None
         try:
             verbose_router_logger.debug("Inside _aembedding()- model: %s; kwargs: %s", model, kwargs)
             parent_otel_span: Final = get_parent_otel_span_from_kwargs(kwargs)
+            kwargs["_litellm_is_embedding"] = True  # rebind-ok: request-local marker is removed in finally
             try:
                 deployment: Final = await self.async_get_available_deployment(
                     model=model,
                     input=input,
-                    specific_deployment=specific_deployment,
-                    request_kwargs=request_kwargs,
+                    specific_deployment=kwargs.pop("specific_deployment", None),
+                    request_kwargs=kwargs,
                 )
             finally:
-                request_kwargs.pop("_litellm_is_embedding", None)
-            self._update_kwargs_with_deployment(deployment=deployment, kwargs=request_kwargs)
+                kwargs.pop("_litellm_is_embedding", None)
+            self._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs)
             data: Final = deployment["litellm_params"].copy()
             model_name = data["model"]
             model_client: Final = self._get_async_openai_model_client(
                 deployment=deployment,
-                kwargs=request_kwargs,
+                kwargs=kwargs,
             )
 
             self.total_calls[model_name] += 1
-            async with self._deployment_slot(
-                deployment=deployment, kwargs=request_kwargs, parent_otel_span=parent_otel_span
-            ):
+            async with self._deployment_slot(deployment=deployment, kwargs=kwargs, parent_otel_span=parent_otel_span):
                 response = await litellm.aembedding(
                     **{
                         **data,
                         "input": input,
                         "caching": self.cache_responses,
                         "client": model_client,
-                        **request_kwargs,
+                        **kwargs,
                     }
                 )
 
@@ -6363,7 +6360,7 @@ class Router:
             verbose_router_logger.info("litellm.aembedding(model=%s)\x1b[31m Exception %s\x1b[0m", model_name, e)
             if model_name is not None:
                 self.fail_calls[model_name] += 1
-            self._stamp_retry_skip_deployment_id(e, request_kwargs)
+            self._stamp_retry_skip_deployment_id(e, kwargs)
             raise e
 
     #### FILES API ####
@@ -12835,13 +12832,11 @@ class Router:
     @staticmethod
     def _count_embedding_input_tokens(input: str | Sequence[object]) -> int:
         if isinstance(input, str):
-            return litellm.token_counter(text=input)
+            return token_counter(text=input)
         if not input or isinstance(input[0], int):
             return len(input)
-        items: Final = cast(
-            Sequence[str | Sequence[int]], input
-        )
-        return max(litellm.token_counter(text=item) if isinstance(item, str) else len(item) for item in items)
+        items: Final = cast(Sequence[str | Sequence[int]], input)  # cast-ok: embedding batches exclude scalar token IDs
+        return max(token_counter(text=item) if isinstance(item, str) else len(item) for item in items)
 
     def _count_pre_call_check_tokens(
         self,
@@ -12865,11 +12860,7 @@ class Router:
         `tools` (Chat Completions, Responses and Anthropic Messages shapes) and the
         Anthropic Messages top-level `system` block.
         """
-        if (
-            input is not None
-            and request_kwargs is not None
-            and request_kwargs.get("_litellm_is_embedding") is True
-        ):
+        if input is not None and request_kwargs is not None and request_kwargs.get("_litellm_is_embedding") is True:
             return self._count_embedding_input_tokens(input)
 
         from litellm.llms.anthropic.pass_through.messages.utils import (
