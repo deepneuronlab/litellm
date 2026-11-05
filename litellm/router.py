@@ -12826,10 +12826,6 @@ class Router:
                 client = self.cache.get_cache(key=cache_key, parent_otel_span=parent_otel_span)
                 return client
 
-    @staticmethod
-    def _count_embedding_input_tokens(input: str | Sequence[object]) -> int:
-        return count_embedding_input_tokens(input)
-
     def _count_pre_call_check_tokens(
         self,
         messages: Sequence[Mapping[str, object]] | None,
@@ -12853,7 +12849,7 @@ class Router:
         Anthropic Messages top-level `system` block.
         """
         if input is not None and request_kwargs is not None and request_kwargs.get("_litellm_is_embedding") is True:
-            return self._count_embedding_input_tokens(input)
+            return count_embedding_input_tokens(input)
 
         from litellm.llms.anthropic.pass_through.messages.utils import (
             anthropic_system_to_openai_message,

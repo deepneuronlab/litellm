@@ -6517,7 +6517,6 @@ def test_embedding_context_count_uses_token_ids_without_chat_overhead(
     count: Final = router._count_pre_call_check_tokens(
         messages=None, input=embedding_input, request_kwargs={"_litellm_is_embedding": True}
     )
-    assert router._count_embedding_input_tokens(embedding_input) == expected_tokens
     assert count == expected_tokens
 
 
