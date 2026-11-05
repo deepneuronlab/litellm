@@ -133,7 +133,8 @@ checked against each deployment's context window, not the sum of the batch. Asyn
 counting stays off the event loop. Embedding mode travels through the existing
 request kwargs contract, preserving custom routing and healthy-deployment override
 signatures, and is removed before the provider call. Chat and Responses retain
-their system, tool and instruction token accounting
+their system, tool and instruction token accounting. `disable_token_counter` skips
+embedding accounting for all input shapes, including pre-tokenized vectors
 
 **LLM-specific proxy endpoints:**
 

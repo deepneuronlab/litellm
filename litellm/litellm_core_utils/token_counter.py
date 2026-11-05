@@ -412,6 +412,8 @@ class _MessageCountParams:
 
 
 def count_embedding_input_tokens(input: str | Sequence[object]) -> int:
+    if litellm.disable_token_counter is True:
+        return 0
     if isinstance(input, str):
         return token_counter(text=input)
     if not input or isinstance(input[0], int):
@@ -422,14 +424,14 @@ def count_embedding_input_tokens(input: str | Sequence[object]) -> int:
 
 def _count_embedding_item_tokens(item: object, count_function: TokenCounterFunction) -> int:
     if isinstance(item, str):
-        return 0 if litellm.disable_token_counter is True else count_function(item)
+        return count_function(item)
     if isinstance(item, Sequence):
         parts: Final = cast(Sequence[object], item)  # cast-ok: checked Sequence
         if not parts or isinstance(parts[0], int):
             return len(parts)
         return sum(_count_embedding_item_tokens(part, count_function) for part in parts)
     content: Final = _EMBEDDING_CONTENT_ADAPTER.validate_python(item)
-    return 0 if litellm.disable_token_counter is True else _count_content_list(count_function, (content,), False, None)
+    return _count_content_list(count_function, (content,), False, None)
 
 
 def token_counter(

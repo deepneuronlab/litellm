@@ -6575,6 +6575,18 @@ async def test_async_embedding_rejects_an_item_over_its_context_limit(
         await router.aembedding(model="embedding-precheck", input=embedding_input, mock_response=[0.1, 0.2])
 
 
+@pytest.mark.parametrize("embedding_input", [[11, 12, 13, 14], [[11, 12, 13, 14]]])
+async def test_embedding_token_counting_opt_out_preserves_token_vector_requests(
+    monkeypatch: pytest.MonkeyPatch, embedding_input: list[int] | list[list[int]]
+) -> None:
+    router: Final = _embedding_context_router()
+    monkeypatch.setattr(litellm, "disable_token_counter", True)
+    response: Final = await router.aembedding(
+        model="embedding-precheck", input=embedding_input, mock_response=[0.1, 0.2]
+    )
+    assert response.data[0]["embedding"] == [0.1, 0.2]
+
+
 async def test_async_embedding_supports_legacy_healthy_deployment_override() -> None:
     class LegacyHealthyDeploymentOverrideRouter(Router):
         async def async_get_healthy_deployments(
