@@ -6487,7 +6487,7 @@ def test_count_pre_call_check_tokens_across_api_surfaces():
 
 
 def _embedding_context_router(
-    routing_strategy: Literal["simple-shuffle", "usage-based-routing"] = "simple-shuffle",
+    routing_strategy: Literal["simple-shuffle", "usage-based-routing", "lar1"] = "simple-shuffle",
 ) -> Router:
     return Router(
         model_list=[
@@ -6514,7 +6514,10 @@ def test_embedding_context_count_uses_token_ids_without_chat_overhead(
     embedding_input: list[int] | list[list[int]], expected_tokens: int
 ) -> None:
     router: Final = _embedding_context_router()
-    count: Final = router._count_pre_call_check_tokens(messages=None, input=embedding_input, is_embedding=True)
+    count: Final = router._count_pre_call_check_tokens(
+        messages=None, input=embedding_input, request_kwargs={"_litellm_is_embedding": True}
+    )
+    assert router._count_embedding_input_tokens(embedding_input) == expected_tokens
     assert count == expected_tokens
 
 
@@ -6531,7 +6534,9 @@ def test_embedding_context_count_tokenizes_each_text_independently(
     router: Final = _embedding_context_router()
     texts: Final = (embedding_input,) if isinstance(embedding_input, str) else embedding_input
     expected_tokens: Final = max(litellm.token_counter(text=text) for text in texts)
-    count: Final = router._count_pre_call_check_tokens(messages=None, input=embedding_input, is_embedding=True)
+    count: Final = router._count_pre_call_check_tokens(
+        messages=None, input=embedding_input, request_kwargs={"_litellm_is_embedding": True}
+    )
     assert count == expected_tokens
 
 
@@ -6550,7 +6555,7 @@ def test_sync_embedding_rejects_an_item_over_its_context_limit(
         router.embedding(model="embedding-precheck", input=embedding_input, mock_response=[0.1, 0.2])
 
 
-@pytest.mark.parametrize("routing_strategy", ["simple-shuffle", "usage-based-routing"])
+@pytest.mark.parametrize("routing_strategy", ["simple-shuffle", "usage-based-routing", "lar1"])
 @pytest.mark.parametrize(
     "embedding_input",
     [
@@ -6560,11 +6565,53 @@ def test_sync_embedding_rejects_an_item_over_its_context_limit(
 )
 async def test_async_embedding_rejects_an_item_over_its_context_limit(
     embedding_input: list[int] | list[list[int]],
-    routing_strategy: Literal["simple-shuffle", "usage-based-routing"],
+    routing_strategy: Literal["simple-shuffle", "usage-based-routing", "lar1"],
 ) -> None:
     router: Final = _embedding_context_router(routing_strategy)
     with pytest.raises(litellm.ContextWindowExceededError):
         await router.aembedding(model="embedding-precheck", input=embedding_input, mock_response=[0.1, 0.2])
+
+
+async def test_async_embedding_supports_legacy_healthy_deployment_override() -> None:
+    class LegacyHealthyDeploymentOverrideRouter(Router):
+        async def async_get_healthy_deployments(
+            self,
+            model: str,
+            request_kwargs: dict,
+            messages: list[dict[str, str]] | None = None,
+            input: str | list | None = None,
+            specific_deployment: bool | None = False,
+            parent_otel_span: Span | None = None,
+            health_check_probe: bool = False,
+        ) -> list[dict] | dict:
+            return await super().async_get_healthy_deployments(
+                model=model,
+                request_kwargs=request_kwargs,
+                messages=messages,
+                input=input,
+                specific_deployment=specific_deployment,
+                parent_otel_span=parent_otel_span,
+                health_check_probe=health_check_probe,
+            )
+
+    router: Final = LegacyHealthyDeploymentOverrideRouter(
+        model_list=[
+            {
+                "model_name": "embedding-precheck",
+                "litellm_params": {"model": "text-embedding-3-large", "api_key": "test-key"},
+                "model_info": {"max_input_tokens": 3},
+            }
+        ],
+        routing_strategy="simple-shuffle",
+        enable_pre_call_checks=True,
+        num_retries=0,
+    )
+    with pytest.raises(litellm.ContextWindowExceededError):
+        await router.aembedding(
+            model="embedding-precheck",
+            input=[[11], [12, 13, 14, 15]],
+            mock_response=[0.1, 0.2],
+        )
 
 
 def test_pre_call_checks_no_messages_or_input_does_not_crash(monkeypatch):
