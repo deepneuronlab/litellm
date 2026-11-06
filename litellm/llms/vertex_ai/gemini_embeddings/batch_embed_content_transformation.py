@@ -324,7 +324,6 @@ def flatten_media_sources(input: GeminiEmbeddingInput) -> tuple[str, ...]:
 
 
 def embedding_element_source(element: object) -> tuple[str, str | None]:
-    """An element's source and explicit media type, read as the request transform reads them."""
     if isinstance(element, str):
         return element, None
     block: Final = _parse_file_block(element, drop_params=True)
@@ -332,7 +331,6 @@ def embedding_element_source(element: object) -> tuple[str, str | None]:
 
 
 def embedding_source_kind(source: str) -> Literal["text", "inline", "remote"]:
-    """Whether Gemini receives a source as text, inline media bytes, or a media URI it fetches itself."""
     if _is_data_url(source):
         return "inline"
     if _is_gcs_url(source) or is_file_reference(source):
