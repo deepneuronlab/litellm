@@ -12942,7 +12942,7 @@ class Router:
             case LlmProviders.GEMINI.value:
                 return "media_strings"
             case LlmProviders.BEDROCK.value:
-                return "media_strings" if provider_model == "amazon.titan-embed-image-v1" else "openai"
+                return "titan_image" if provider_model == "amazon.titan-embed-image-v1" else "openai"
             case LlmProviders.VERTEX_AI.value:
                 from litellm.llms.vertex_ai.multimodal_embeddings.embedding_handler import (
                     SUPPORTED_MULTIMODAL_EMBEDDING_MODELS,

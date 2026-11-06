@@ -6593,7 +6593,7 @@ async def test_async_embedding_rejects_an_item_over_its_context_limit(
         pytest.param("vertex_ai/gemini-embedding-2", "gemini_embed_content", id="vertex-embed-content"),
         pytest.param("vertex_ai/multimodalembedding@001", "vertex_multimodal", id="vertex-multimodal"),
         pytest.param("vertex_ai/text-embedding-005", "openai", id="vertex-text"),
-        pytest.param("bedrock/amazon.titan-embed-image-v1", "media_strings", id="bedrock"),
+        pytest.param("bedrock/amazon.titan-embed-image-v1", "titan_image", id="bedrock"),
         pytest.param("bedrock/amazon.titan-embed-text-v2:0", "openai", id="bedrock-text"),
         pytest.param("voyage/voyage-multimodal-3", "voyage_multimodal", id="voyage-multimodal"),
         pytest.param("voyage/voyage-3", "openai", id="voyage-text"),
@@ -6643,6 +6643,12 @@ def test_client_supplied_embedding_marker_keeps_responses_accounting() -> None:
     )
     assert forged == router._count_pre_call_check_tokens(messages=None, input="hello", request_kwargs=request_kwargs)
     assert forged > litellm.token_counter(text="hello")
+
+
+@pytest.mark.parametrize("locator", ["gs://bucket/long text " * 3, "files/abc " * 6])
+def test_titan_image_counts_locator_like_strings_as_text(locator: str) -> None:
+    router: Final = _embedding_context_router(deployment_model="bedrock/amazon.titan-embed-image-v1")
+    assert _embedding_precheck_count(router, [locator]) == litellm.token_counter(text=locator)
 
 
 def test_vertex_multimodal_pairs_text_with_the_following_image() -> None:

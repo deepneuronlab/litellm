@@ -419,13 +419,14 @@ class _MessageCountParams:
 
 
 EmbeddingTokenLayout: TypeAlias = Literal[
-    "openai", "media_strings", "gemini_embed_content", "vertex_multimodal", "voyage_multimodal"
+    "openai", "media_strings", "gemini_embed_content", "titan_image", "vertex_multimodal", "voyage_multimodal"
 ]
 """
 How a provider turns an embedding `input` into embeddings, which decides what one context window holds.
 
 - openai: each top-level item is one embedding; a nested list is one item made of its parts.
-- media_strings: as openai, but data:, gs:// and files/ strings are media, not text (Gemini, Bedrock Titan image).
+- media_strings: as openai, but data:, gs:// and files/ strings are media, not text (Gemini).
+- titan_image: Bedrock Titan image, where only base64 data: strings are images and the rest is text.
 - vertex_multimodal: Vertex AI multimodalembedding instances, where a text item pairs with the media item after it.
 - gemini_embed_content: the whole input is one multipart embedding, so every part shares one window.
 - voyage_multimodal: each item is text or a `{"content": [...]}` envelope of text and image blocks.
@@ -451,6 +452,8 @@ def _count_embedding_item_tokens(
 ) -> int:
     if layout == "voyage_multimodal":
         return _count_voyage_item_tokens(item, count_function)
+    if layout == "titan_image":
+        return _count_titan_image_item_tokens(item, count_function)
     parts: Final = (
         cast(Sequence[object], item)  # cast-ok: a non-str Sequence item is the list of one embedding's parts
         if isinstance(item, Sequence) and not isinstance(item, str)
@@ -505,6 +508,14 @@ def _unmeasured_embedding_media_tokens() -> int:
     enforces the unmeasured media's share.
     """
     return 0
+
+
+def _count_titan_image_item_tokens(item: object, count_function: TokenCounterFunction) -> int:
+    from litellm.utils import is_base64_encoded
+
+    if not isinstance(item, str):
+        raise TypeError(f"Bedrock Titan image embedding items must be strings, got {type(item).__name__}")
+    return calculate_img_tokens(data="", mode="auto") if is_base64_encoded(item) else count_function(item)
 
 
 def _count_vertex_multimodal_tokens(items: Sequence[object], count_function: TokenCounterFunction) -> int:
