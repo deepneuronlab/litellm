@@ -552,8 +552,7 @@ def _configured_model_info(deployment: Mapping[str, object]) -> Mapping[str, obj
     return _MODEL_INFO_ADAPTER.validate_python(deployment.get("model_info") or {})
 
 
-_EMBEDDING_REQUEST: Final = object()
-"""Marks router-originated embedding calls; an object, so no client JSON field can forge it."""
+_EMBEDDING_REQUEST: Final = object()  # not JSON-serializable, so a client field cannot forge it
 
 
 def _vertex_embedding_uses_embed_content(model: str) -> bool:
@@ -12941,8 +12940,10 @@ class Router:
         except Exception:  # noqa: BLE001  # an unresolvable deployment reads input the default way
             return "openai"
         match provider:
-            case LlmProviders.GEMINI.value | LlmProviders.BEDROCK.value:
+            case LlmProviders.GEMINI.value:
                 return "media_strings"
+            case LlmProviders.BEDROCK.value:
+                return "media_strings" if provider_model == "amazon.titan-embed-image-v1" else "openai"
             case LlmProviders.VERTEX_AI.value:
                 return (
                     "gemini_embed_content" if _vertex_embedding_uses_embed_content(provider_model) else "media_strings"

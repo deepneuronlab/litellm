@@ -6593,6 +6593,7 @@ async def test_async_embedding_rejects_an_item_over_its_context_limit(
         pytest.param("vertex_ai/gemini-embedding-2", "gemini_embed_content", id="vertex-embed-content"),
         pytest.param("vertex_ai/multimodalembedding@001", "media_strings", id="vertex-predict"),
         pytest.param("bedrock/amazon.titan-embed-image-v1", "media_strings", id="bedrock"),
+        pytest.param("bedrock/amazon.titan-embed-text-v2:0", "openai", id="bedrock-text"),
         pytest.param("voyage/voyage-multimodal-3", "voyage_multimodal", id="voyage-multimodal"),
         pytest.param("voyage/voyage-3", "openai", id="voyage-text"),
     ],
