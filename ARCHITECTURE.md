@@ -135,8 +135,9 @@ input is read the way each limited deployment's provider reads it: Gemini treats
 turns a flat list into one embedding whose parts share the window, and Voyage
 multimodal items are `{"content": [...]}` envelopes. A model group whose deployments
 read the input differently is checked against the largest reading. Media with no
-local size (remote `gs://`/`files/` references, audio and video) makes the count
-unknown rather than zero, so that request is not filtered by context window. Images
+local size (remote `gs://`/`files/` references, audio and video) is unknown, not
+measured: it adds nothing, so the count is a lower bound. Measured parts that alone
+exceed the window are still rejected; the provider enforces the rest. Images
 use the base image count and are never fetched to size them. Async
 counting stays off the event loop. Embedding mode travels through the existing
 request kwargs contract, preserving custom routing and healthy-deployment override

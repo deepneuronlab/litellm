@@ -493,14 +493,13 @@ def _count_inline_embedding_media_tokens(data_url: str, media_type: str, count_f
     return _unmeasured_embedding_media_tokens()
 
 
-class UnmeasurableEmbeddingMediaError(ValueError):
-    """The input holds media whose size is unknown locally, so its token count is unknown, not zero."""
-
-
 def _unmeasured_embedding_media_tokens() -> int:
-    raise UnmeasurableEmbeddingMediaError(
-        "Embedding input holds remote or audio/video media that cannot be measured without fetching it"
-    )
+    """Unknown, not measured zero: remote and audio/video media add nothing to the local lower bound.
+
+    The precheck still rejects input whose measured parts alone exceed the window; the provider
+    enforces the unmeasured media's share.
+    """
+    return 0
 
 
 def _count_voyage_item_tokens(item: object, count_function: TokenCounterFunction) -> int:
