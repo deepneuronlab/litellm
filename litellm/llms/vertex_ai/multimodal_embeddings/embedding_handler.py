@@ -19,15 +19,13 @@ from litellm.types.utils import EmbeddingResponse
 from .transformation import VertexAIMultimodalEmbeddingConfig
 
 vertex_multimodal_embedding_handler: Final = VertexAIMultimodalEmbeddingConfig()
+SUPPORTED_MULTIMODAL_EMBEDDING_MODELS: Final = ("multimodalembedding", "multimodalembedding@001")
 
 
 class VertexMultimodalEmbedding(VertexLLM):
     def __init__(self) -> None:
         super().__init__()
-        self.SUPPORTED_MULTIMODAL_EMBEDDING_MODELS = [
-            "multimodalembedding",
-            "multimodalembedding@001",
-        ]
+        self.SUPPORTED_MULTIMODAL_EMBEDDING_MODELS = list(SUPPORTED_MULTIMODAL_EMBEDDING_MODELS)
 
     def multimodal_embedding(
         self,

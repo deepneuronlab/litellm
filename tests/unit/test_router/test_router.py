@@ -6591,7 +6591,8 @@ async def test_async_embedding_rejects_an_item_over_its_context_limit(
         pytest.param("text-embedding-3-large", "openai", id="openai"),
         pytest.param("gemini/gemini-embedding-001", "media_strings", id="gemini"),
         pytest.param("vertex_ai/gemini-embedding-2", "gemini_embed_content", id="vertex-embed-content"),
-        pytest.param("vertex_ai/multimodalembedding@001", "media_strings", id="vertex-predict"),
+        pytest.param("vertex_ai/multimodalembedding@001", "vertex_multimodal", id="vertex-multimodal"),
+        pytest.param("vertex_ai/text-embedding-005", "openai", id="vertex-text"),
         pytest.param("bedrock/amazon.titan-embed-image-v1", "media_strings", id="bedrock"),
         pytest.param("bedrock/amazon.titan-embed-text-v2:0", "openai", id="bedrock-text"),
         pytest.param("voyage/voyage-multimodal-3", "voyage_multimodal", id="voyage-multimodal"),
@@ -6642,6 +6643,13 @@ def test_client_supplied_embedding_marker_keeps_responses_accounting() -> None:
     )
     assert forged == router._count_pre_call_check_tokens(messages=None, input="hello", request_kwargs=request_kwargs)
     assert forged > litellm.token_counter(text="hello")
+
+
+def test_vertex_multimodal_pairs_text_with_the_following_image() -> None:
+    image: Final = "data:image/png;base64," + base64.b64encode(bytes(range(256)) * 8).decode()
+    router: Final = _embedding_context_router(deployment_model="vertex_ai/multimodalembedding@001", max_input_tokens=100)
+    paired: Final = litellm.token_counter(text="hello world") + calculate_img_tokens(image, mode="auto")
+    assert _embedding_precheck_count(router, ["hello world", image, "hello"]) == paired
 
 
 @pytest.mark.parametrize("deployment_model", ["vertex_ai/multimodalembedding@001", "bedrock/amazon.titan-embed-image-v1"])

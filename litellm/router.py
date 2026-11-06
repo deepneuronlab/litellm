@@ -556,7 +556,6 @@ _EMBEDDING_REQUEST: Final = object()  # not JSON-serializable, so a client field
 
 
 def _vertex_embedding_uses_embed_content(model: str) -> bool:
-    """Mirrors `litellm.embedding`: a Vertex AI model flagged `uses_embed_content` takes one multipart request."""
     try:
         return litellm.get_model_info(model=model, custom_llm_provider="vertex_ai").get("uses_embed_content") is True
     except Exception:  # noqa: BLE001  # an unmapped model keeps the predict path, as dispatch does
@@ -12945,9 +12944,13 @@ class Router:
             case LlmProviders.BEDROCK.value:
                 return "media_strings" if provider_model == "amazon.titan-embed-image-v1" else "openai"
             case LlmProviders.VERTEX_AI.value:
-                return (
-                    "gemini_embed_content" if _vertex_embedding_uses_embed_content(provider_model) else "media_strings"
+                from litellm.llms.vertex_ai.multimodal_embeddings.embedding_handler import (
+                    SUPPORTED_MULTIMODAL_EMBEDDING_MODELS,
                 )
+
+                if _vertex_embedding_uses_embed_content(provider_model):
+                    return "gemini_embed_content"
+                return "vertex_multimodal" if provider_model in SUPPORTED_MULTIMODAL_EMBEDDING_MODELS else "openai"
             case LlmProviders.VOYAGE.value:
                 from litellm.utils import ProviderConfigManager
 

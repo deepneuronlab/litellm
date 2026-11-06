@@ -418,12 +418,15 @@ class _MessageCountParams:
         self.count_function = _get_count_function(model, custom_tokenizer)
 
 
-EmbeddingTokenLayout: TypeAlias = Literal["openai", "media_strings", "gemini_embed_content", "voyage_multimodal"]
+EmbeddingTokenLayout: TypeAlias = Literal[
+    "openai", "media_strings", "gemini_embed_content", "vertex_multimodal", "voyage_multimodal"
+]
 """
 How a provider turns an embedding `input` into embeddings, which decides what one context window holds.
 
 - openai: each top-level item is one embedding; a nested list is one item made of its parts.
-- media_strings: as openai, but data:, gs:// and files/ strings are media, not text (Gemini, Vertex AI predict, Bedrock).
+- media_strings: as openai, but data:, gs:// and files/ strings are media, not text (Gemini, Bedrock Titan image).
+- vertex_multimodal: Vertex AI multimodalembedding instances, where a text item pairs with the media item after it.
 - gemini_embed_content: the whole input is one multipart embedding, so every part shares one window.
 - voyage_multimodal: each item is text or a `{"content": [...]}` envelope of text and image blocks.
 """
@@ -437,6 +440,8 @@ def count_embedding_input_tokens(input: str | Sequence[object], layout: Embeddin
     if not items or isinstance(items[0], int):
         return len(items)
     count_function: Final = _get_count_function("")
+    if layout == "vertex_multimodal":
+        return _count_vertex_multimodal_tokens(items, count_function)
     item_tokens: Final = tuple(_count_embedding_item_tokens(item, layout, count_function) for item in items)
     return sum(item_tokens) if layout == "gemini_embed_content" else max(item_tokens)
 
@@ -500,6 +505,20 @@ def _unmeasured_embedding_media_tokens() -> int:
     enforces the unmeasured media's share.
     """
     return 0
+
+
+def _count_vertex_multimodal_tokens(items: Sequence[object], count_function: TokenCounterFunction) -> int:
+    from litellm.llms.vertex_ai.multimodal_embeddings.embedding_handler import vertex_multimodal_embedding_handler
+
+    instances: Final = vertex_multimodal_embedding_handler.process_openai_embedding_input(  # pyright: ignore[reportUnknownMemberType]  # provider transform takes bare list
+        list(items)
+    )
+    return max(
+        count_function(instance.get("text") or "")
+        + (calculate_img_tokens(data="", mode="auto") if instance.get("image") else 0)
+        + (_unmeasured_embedding_media_tokens() if instance.get("video") else 0)
+        for instance in instances
+    )
 
 
 def _count_voyage_item_tokens(item: object, count_function: TokenCounterFunction) -> int:

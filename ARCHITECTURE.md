@@ -130,8 +130,9 @@ and Responses inputs. Embedding token arrays are already tokenized; text inputs 
 counted without chat-message framing. Combined inputs sum their text and media parts
 using the shared content counter. For a batch, the largest individual input is
 checked against each deployment's context window, not the sum of the batch. The
-input is read the way each limited deployment's provider reads it: Gemini, Vertex AI
-predict and Bedrock Titan image treat `data:`, `gs://` and `files/` strings as media, a Vertex AI `embedContent` model
+input is read the way each limited deployment's provider reads it: Gemini and Bedrock Titan
+image treat `data:`, `gs://` and `files/` strings as media, Vertex AI
+`multimodalembedding` pairs a text item with the media item after it, a Vertex AI `embedContent` model
 turns a flat list into one embedding whose parts share the window, and Voyage
 multimodal items are `{"content": [...]}` envelopes. A model group whose deployments
 read the input differently is checked against the largest reading. Media with no
