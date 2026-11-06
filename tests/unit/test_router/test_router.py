@@ -1,4 +1,4 @@
-import ast, asyncio, importlib, time
+import ast, asyncio, base64, importlib, time
 import copy
 import functools
 import gc
@@ -9,7 +9,7 @@ import os
 import sys
 import threading
 import warnings
-from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Final, Literal
@@ -31,6 +31,8 @@ from litellm.caching.in_memory_cache import InMemoryCache
 from litellm.caching.redis_cache import _redis_circuit_breaker_guard
 from litellm.exceptions import GuardrailRaisedException, MidStreamFallbackError, ModifyResponseException
 from litellm.litellm_core_utils.streaming_handler import CustomStreamWrapper
+from litellm.litellm_core_utils.token_counter import calculate_img_tokens
+from litellm.router import _EMBEDDING_REQUEST
 from litellm.integrations.custom_guardrail import CustomGuardrail
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.integrations.otel.plumbing.context import set_request_root_span
@@ -6484,6 +6486,277 @@ def test_count_pre_call_check_tokens_across_api_surfaces():
 
     with pytest.raises(ValueError, match='Either messages or input must be provided to count tokens'):
         router._count_pre_call_check_tokens(messages=None, input=None)
+
+
+def _embedding_context_router(
+    routing_strategy: Literal["simple-shuffle", "usage-based-routing", "lar1"] = "simple-shuffle",
+    deployment_model: str = "text-embedding-3-large",
+    max_input_tokens: int = 3,
+) -> Router:
+    return Router(
+        model_list=[
+            {
+                "model_name": "embedding-precheck",
+                "litellm_params": {"model": deployment_model, "api_key": "test-key"},
+                "model_info": {"max_input_tokens": max_input_tokens},
+            }
+        ],
+        routing_strategy=routing_strategy,
+        enable_pre_call_checks=True,
+        num_retries=0,
+    )
+
+
+def _embedding_precheck_count(router: Router, embedding_input: str | Sequence[object]) -> int:
+    return router._pre_call_check_token_count(
+        model="embedding-precheck",
+        healthy_deployments=router.model_list,
+        messages=None,
+        input=embedding_input,
+        request_kwargs={"_litellm_is_embedding": _EMBEDDING_REQUEST},
+    )
+
+
+@pytest.mark.parametrize(
+    "embedding_input, expected_tokens",
+    [
+        pytest.param([11, 12, 13], 3, id="token-vector"),
+        pytest.param([[11, 12], [13, 14, 15]], 3, id="token-batch"),
+    ],
+)
+def test_embedding_context_count_uses_token_ids_without_chat_overhead(
+    embedding_input: list[int] | list[list[int]], expected_tokens: int
+) -> None:
+    router: Final = _embedding_context_router()
+    count: Final = _embedding_precheck_count(router, embedding_input)
+    assert count == expected_tokens
+
+
+@pytest.mark.parametrize(
+    "embedding_input",
+    [
+        pytest.param("hello world", id="text"),
+        pytest.param(["hello", "count the longest input in this batch"], id="text-batch"),
+    ],
+)
+def test_embedding_context_count_tokenizes_each_text_independently(
+    embedding_input: str | list[str],
+) -> None:
+    router: Final = _embedding_context_router()
+    texts: Final = (embedding_input,) if isinstance(embedding_input, str) else embedding_input
+    expected_tokens: Final = max(litellm.token_counter(text=text) for text in texts)
+    count: Final = _embedding_precheck_count(router, embedding_input)
+    assert count == expected_tokens
+
+
+@pytest.mark.parametrize(
+    "embedding_input",
+    [
+        pytest.param([11, 12, 13, 14], id="token-vector"),
+        pytest.param([[11], [12, 13, 14, 15]], id="token-batch"),
+        pytest.param([["hello world hello world"]], id="nested-text"),
+        pytest.param([["hello world", "hello world"]], id="combined-text"),
+    ],
+)
+def test_sync_embedding_rejects_an_item_over_its_context_limit(
+    embedding_input: list[int] | list[list[int]] | list[list[str]],
+) -> None:
+    router: Final = _embedding_context_router()
+    with pytest.raises(litellm.ContextWindowExceededError):
+        router.embedding(model="embedding-precheck", input=embedding_input, mock_response=[0.1, 0.2])
+
+
+@pytest.mark.parametrize("routing_strategy", ["simple-shuffle", "usage-based-routing", "lar1"])
+@pytest.mark.parametrize(
+    "embedding_input",
+    [
+        pytest.param([11, 12, 13, 14], id="token-vector"),
+        pytest.param([[11], [12, 13, 14, 15]], id="token-batch"),
+        pytest.param([["hello world hello world"]], id="nested-text"),
+        pytest.param([["hello world", "hello world"]], id="combined-text"),
+    ],
+)
+async def test_async_embedding_rejects_an_item_over_its_context_limit(
+    embedding_input: list[int] | list[list[int]] | list[list[str]],
+    routing_strategy: Literal["simple-shuffle", "usage-based-routing", "lar1"],
+) -> None:
+    router: Final = _embedding_context_router(routing_strategy)
+    with pytest.raises(litellm.ContextWindowExceededError):
+        await router.aembedding(model="embedding-precheck", input=embedding_input, mock_response=[0.1, 0.2])
+
+
+@pytest.mark.parametrize(
+    "deployment_model, layout",
+    [
+        pytest.param("text-embedding-3-large", "openai", id="openai"),
+        pytest.param("gemini/gemini-embedding-001", "media_strings", id="gemini"),
+        pytest.param("vertex_ai/gemini-embedding-2", "gemini_embed_content", id="vertex-embed-content"),
+        pytest.param("vertex_ai/multimodalembedding@001", "vertex_multimodal", id="vertex-multimodal"),
+        pytest.param("vertex_ai/text-embedding-005", "openai", id="vertex-text"),
+        pytest.param("bedrock/amazon.titan-embed-image-v1", "titan_image", id="bedrock"),
+        pytest.param("bedrock/amazon.titan-embed-text-v2:0", "openai", id="bedrock-text"),
+        pytest.param("voyage/voyage-multimodal-3", "voyage_multimodal", id="voyage-multimodal"),
+        pytest.param("voyage/voyage-3", "openai", id="voyage-text"),
+    ],
+)
+def test_embedding_token_layout_follows_embedding_dispatch(deployment_model: str, layout: str) -> None:
+    router: Final = _embedding_context_router(deployment_model=deployment_model)
+    assert router._embedding_token_layout(router.model_list[0]) == layout
+
+
+def test_vertex_embedding_uses_embed_content_only_for_flagged_models() -> None:
+    from litellm.router import _vertex_embedding_uses_embed_content
+
+    assert _vertex_embedding_uses_embed_content("gemini-embedding-2") is True
+    assert _vertex_embedding_uses_embed_content("text-embedding-005") is False
+    assert _vertex_embedding_uses_embed_content("not-a-mapped-model") is False
+
+
+def test_mixed_embedding_group_is_checked_against_its_largest_reading() -> None:
+    router: Final = Router(
+        model_list=[
+            {
+                "model_name": "embedding-precheck",
+                "litellm_params": {"model": deployment_model, "api_key": "test-key"},
+                "model_info": {"max_input_tokens": 3},
+            }
+            for deployment_model in ("text-embedding-3-large", "vertex_ai/gemini-embedding-2")
+        ],
+        enable_pre_call_checks=True,
+        num_retries=0,
+    )
+    parts: Final = ["hello world", "hello world"]
+    assert router._count_embedding_pre_call_check_tokens("embedding-precheck", router.model_list, parts) == sum(
+        litellm.token_counter(text=part) for part in parts
+    )
+
+
+def test_client_supplied_embedding_marker_keeps_responses_accounting() -> None:
+    router: Final = _embedding_context_router()
+    request_kwargs: Final = {"_litellm_is_embedding": True, "instructions": "be terse " * 20}
+    forged: Final = router._pre_call_check_token_count(
+        model="embedding-precheck",
+        healthy_deployments=router.model_list,
+        messages=None,
+        input="hello",
+        request_kwargs=request_kwargs,
+    )
+    assert forged == router._count_pre_call_check_tokens(messages=None, input="hello", request_kwargs=request_kwargs)
+    assert forged > litellm.token_counter(text="hello")
+
+
+@pytest.mark.parametrize("locator", ["gs://bucket/long text " * 3, "files/abc " * 6])
+def test_titan_image_counts_locator_like_strings_as_text(locator: str) -> None:
+    router: Final = _embedding_context_router(deployment_model="bedrock/amazon.titan-embed-image-v1")
+    assert _embedding_precheck_count(router, [locator]) == litellm.token_counter(text=locator)
+
+
+def test_vertex_multimodal_pairs_text_with_the_following_image() -> None:
+    image: Final = "data:image/png;base64," + base64.b64encode(bytes(range(256)) * 8).decode()
+    router: Final = _embedding_context_router(deployment_model="vertex_ai/multimodalembedding@001", max_input_tokens=100)
+    paired: Final = litellm.token_counter(text="hello world") + calculate_img_tokens(image, mode="auto")
+    assert _embedding_precheck_count(router, ["hello world", image, "hello"]) == paired
+
+
+@pytest.mark.parametrize("deployment_model", ["vertex_ai/multimodalembedding@001", "bedrock/amazon.titan-embed-image-v1"])
+def test_image_embedding_providers_count_a_data_image_string_as_an_image(deployment_model: str) -> None:
+    image: Final = "data:image/png;base64," + base64.b64encode(bytes(range(256)) * 8).decode()
+    router: Final = _embedding_context_router(deployment_model=deployment_model, max_input_tokens=100)
+    assert _embedding_precheck_count(router, [image]) == calculate_img_tokens(image, mode="auto")
+
+
+def test_vertex_embed_content_rejects_flat_parts_that_share_one_embedding() -> None:
+    parts: Final = ["hello world", "hello world"]
+    vertex_router: Final = _embedding_context_router(deployment_model="vertex_ai/gemini-embedding-2")
+    assert _embedding_precheck_count(vertex_router, parts) == sum(litellm.token_counter(text=part) for part in parts)
+    with pytest.raises(litellm.ContextWindowExceededError):
+        vertex_router.embedding(model="embedding-precheck", input=parts, mock_response=[0.1, 0.2])
+
+
+@pytest.mark.parametrize("deployment_model", ["text-embedding-3-large", "gemini/gemini-embedding-001"])
+def test_batch_providers_check_flat_parts_as_separate_embeddings(deployment_model: str) -> None:
+    parts: Final = ["hello world", "hello world"]
+    router: Final = _embedding_context_router(deployment_model=deployment_model)
+    assert _embedding_precheck_count(router, parts) == litellm.token_counter(text="hello world")
+
+
+def test_gemini_embedding_counts_an_inline_image_string_as_media_not_text() -> None:
+    image: Final = "data:image/png;base64," + base64.b64encode(bytes(range(256)) * 8).decode()
+    router: Final = _embedding_context_router(deployment_model="gemini/gemini-embedding-001", max_input_tokens=100)
+    assert litellm.token_counter(text=image) > 100
+    assert _embedding_precheck_count(router, [image]) == calculate_img_tokens(image, mode="auto")
+    response: Final = router.embedding(model="embedding-precheck", input=[image], mock_response=[0.1, 0.2])
+    assert response.data[0]["embedding"] == [0.1, 0.2]
+
+
+def test_voyage_multimodal_envelope_counts_its_content_blocks() -> None:
+    envelope: Final = {
+        "content": [
+            {"type": "text", "text": "hello world"},
+            {"type": "image_url", "image_url": "https://example.com/image.png"},
+        ]
+    }
+    router: Final = _embedding_context_router(deployment_model="voyage/voyage-multimodal-3")
+    expected: Final = litellm.token_counter(text="hello world") + calculate_img_tokens(
+        "https://example.com/image.png", mode="auto"
+    )
+    assert _embedding_precheck_count(router, [envelope, "hello"]) == expected
+    with pytest.raises(litellm.ContextWindowExceededError):
+        router.embedding(model="embedding-precheck", input=[envelope], mock_response=[0.1, 0.2])
+
+
+@pytest.mark.parametrize("embedding_input", [[11, 12, 13, 14], [[11, 12, 13, 14]]])
+async def test_embedding_token_counting_opt_out_preserves_token_vector_requests(
+    monkeypatch: pytest.MonkeyPatch, embedding_input: list[int] | list[list[int]]
+) -> None:
+    router: Final = _embedding_context_router()
+    monkeypatch.setattr(litellm, "disable_token_counter", True)
+    response: Final = await router.aembedding(
+        model="embedding-precheck", input=embedding_input, mock_response=[0.1, 0.2]
+    )
+    assert response.data[0]["embedding"] == [0.1, 0.2]
+
+
+async def test_async_embedding_supports_legacy_healthy_deployment_override() -> None:
+    class LegacyHealthyDeploymentOverrideRouter(Router):
+        async def async_get_healthy_deployments(
+            self,
+            model: str,
+            request_kwargs: dict,
+            messages: list[dict[str, str]] | None = None,
+            input: str | list | None = None,
+            specific_deployment: bool | None = False,
+            parent_otel_span: Span | None = None,
+            health_check_probe: bool = False,
+        ) -> list[dict] | dict:
+            return await super().async_get_healthy_deployments(
+                model=model,
+                request_kwargs=request_kwargs,
+                messages=messages,
+                input=input,
+                specific_deployment=specific_deployment,
+                parent_otel_span=parent_otel_span,
+                health_check_probe=health_check_probe,
+            )
+
+    router: Final = LegacyHealthyDeploymentOverrideRouter(
+        model_list=[
+            {
+                "model_name": "embedding-precheck",
+                "litellm_params": {"model": "text-embedding-3-large", "api_key": "test-key"},
+                "model_info": {"max_input_tokens": 3},
+            }
+        ],
+        routing_strategy="simple-shuffle",
+        enable_pre_call_checks=True,
+        num_retries=0,
+    )
+    with pytest.raises(litellm.ContextWindowExceededError):
+        await router.aembedding(
+            model="embedding-precheck",
+            input=[[11], [12, 13, 14, 15]],
+            mock_response=[0.1, 0.2],
+        )
 
 
 def test_pre_call_checks_no_messages_or_input_does_not_crash(monkeypatch):

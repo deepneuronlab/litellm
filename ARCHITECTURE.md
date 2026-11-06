@@ -125,6 +125,28 @@ graph TD
 - `router.py` - Load balancing, fallbacks
 - `router_strategy/` - Routing algorithms (`lowest_latency.py`, `simple_shuffle.py`, etc.)
 
+Router context-window prechecks distinguish embedding inputs from Chat Completions
+and Responses inputs. Embedding token arrays are already tokenized; text inputs are
+counted without chat-message framing. Combined inputs sum their text and media parts
+using the shared content counter. For a batch, the largest individual input is
+checked against each deployment's context window, not the sum of the batch. The
+input is read the way each limited deployment's provider reads it: Gemini treats `data:`,
+`gs://` and `files/` strings as media, Bedrock Titan image treats only base64
+`data:` strings as images, Vertex AI
+`multimodalembedding` pairs a text item with the media item after it, a Vertex AI `embedContent` model
+turns a flat list into one embedding whose parts share the window, and Voyage
+multimodal items are `{"content": [...]}` envelopes. A model group whose deployments
+read the input differently is checked against the largest reading. Media with no
+local size (remote `gs://`/`files/` references, audio and video) is unknown, not
+measured: it adds nothing, so the count is a lower bound. Measured parts that alone
+exceed the window are still rejected; the provider enforces the rest. Images
+use the base image count and are never fetched to size them. Async
+counting stays off the event loop. Embedding mode travels through the existing
+request kwargs contract as a non-JSON sentinel, so a client field cannot forge it, preserving custom routing and healthy-deployment override
+signatures, and is removed before the provider call. Chat and Responses retain
+their system, tool and instruction token accounting. `disable_token_counter` skips
+embedding accounting for all input shapes, including pre-tokenized vectors
+
 **LLM-specific proxy endpoints:**
 
 | Endpoint | Directory | Purpose |

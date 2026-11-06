@@ -118,7 +118,11 @@ from litellm.litellm_core_utils.sensitive_data_masker import (
     SensitiveDataMasker,
     mask_sensitive_structure,
 )
-from litellm.litellm_core_utils.token_counter import offload_token_count
+from litellm.litellm_core_utils.token_counter import (
+    EmbeddingTokenLayout,
+    count_embedding_input_tokens,
+    offload_token_count,
+)
 from litellm.llms.anthropic.common_utils import AnthropicModelInfo, anthropic_error_frame_exception
 from litellm.llms.base_llm.passthrough.transformation import replace_path_segment
 from litellm.llms.base_llm.vector_store.transformation import (
@@ -546,6 +550,16 @@ def _deployment_pick_attributes(model: str, request_kwargs: Mapping[str, object]
 
 def _configured_model_info(deployment: Mapping[str, object]) -> Mapping[str, object]:
     return _MODEL_INFO_ADAPTER.validate_python(deployment.get("model_info") or {})
+
+
+_EMBEDDING_REQUEST: Final = object()  # not JSON-serializable, so a client field cannot forge it
+
+
+def _vertex_embedding_uses_embed_content(model: str) -> bool:
+    try:
+        return litellm.get_model_info(model=model, custom_llm_provider="vertex_ai").get("uses_embed_content") is True
+    except Exception:  # noqa: BLE001  # an unmapped model keeps the predict path, as dispatch does
+        return False
 
 
 def _as_retry_skipped_deployment_ids(value: object) -> tuple[str, ...]:
@@ -6240,12 +6254,16 @@ class Router:
         model_name = None
         try:
             verbose_router_logger.debug("Inside embedding()- model: %s; kwargs: %s", model, kwargs)
-            deployment: Final = self.get_available_deployment(
-                model=model,
-                input=input,
-                specific_deployment=kwargs.pop("specific_deployment", None),
-                request_kwargs=kwargs,
-            )
+            kwargs["_litellm_is_embedding"] = _EMBEDDING_REQUEST  # rebind-ok: removed in finally
+            try:
+                deployment: Final = self.get_available_deployment(
+                    model=model,
+                    input=input,
+                    specific_deployment=kwargs.pop("specific_deployment", None),
+                    request_kwargs=kwargs,
+                )
+            finally:
+                kwargs.pop("_litellm_is_embedding", None)  # pyright: ignore[reportUnknownMemberType]  # untyped kwargs values
             self._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs)
             data: Final = deployment["litellm_params"].copy()
             model_name = data["model"]
@@ -6316,12 +6334,16 @@ class Router:
         try:
             verbose_router_logger.debug("Inside _aembedding()- model: %s; kwargs: %s", model, kwargs)
             parent_otel_span: Final = get_parent_otel_span_from_kwargs(kwargs)
-            deployment: Final = await self.async_get_available_deployment(
-                model=model,
-                input=input,
-                specific_deployment=kwargs.pop("specific_deployment", None),
-                request_kwargs=kwargs,
-            )
+            kwargs["_litellm_is_embedding"] = _EMBEDDING_REQUEST  # rebind-ok: removed in finally
+            try:
+                deployment: Final = await self.async_get_available_deployment(
+                    model=model,
+                    input=input,
+                    specific_deployment=kwargs.pop("specific_deployment", None),
+                    request_kwargs=kwargs,
+                )
+            finally:
+                kwargs.pop("_litellm_is_embedding", None)  # pyright: ignore[reportUnknownMemberType]  # untyped kwargs values
             self._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs)
             data: Final = deployment["litellm_params"].copy()
             model_name = data["model"]
@@ -12821,7 +12843,7 @@ class Router:
     def _count_pre_call_check_tokens(
         self,
         messages: Sequence[Mapping[str, object]] | None,
-        input: str | list[object] | None,
+        input: str | Sequence[object] | None,
         request_kwargs: Mapping[str, object] | None = None,
     ) -> int:
         """
@@ -12899,6 +12921,76 @@ class Router:
             self._deployment_max_input_tokens(model, deployment) is not None for deployment in healthy_deployments
         )
 
+    def _embedding_token_layout(self, deployment: Mapping[str, object]) -> EmbeddingTokenLayout:
+        """How the deployment's provider turns embedding input into embeddings, as `litellm.embedding` dispatches it."""
+        litellm_params: Final = deployment.get("litellm_params")
+        if not isinstance(litellm_params, Mapping):
+            return "openai"
+        params: Final = cast(Mapping[str, object], litellm_params)  # cast-ok: router deployments are plain dicts
+        deployment_model: Final = params.get("model")
+        provider_hint: Final = params.get("custom_llm_provider")
+        if not isinstance(deployment_model, str):
+            return "openai"
+        try:
+            provider_model, provider, _, _ = litellm.get_llm_provider(
+                model=deployment_model,
+                custom_llm_provider=provider_hint if isinstance(provider_hint, str) else None,
+            )
+        except Exception:  # noqa: BLE001  # an unresolvable deployment reads input the default way
+            return "openai"
+        match provider:
+            case LlmProviders.GEMINI.value:
+                return "media_strings"
+            case LlmProviders.BEDROCK.value:
+                return "titan_image" if provider_model == "amazon.titan-embed-image-v1" else "openai"
+            case LlmProviders.VERTEX_AI.value:
+                from litellm.llms.vertex_ai.multimodal_embeddings.embedding_handler import (
+                    SUPPORTED_MULTIMODAL_EMBEDDING_MODELS,
+                )
+
+                if _vertex_embedding_uses_embed_content(provider_model):
+                    return "gemini_embed_content"
+                return "vertex_multimodal" if provider_model in SUPPORTED_MULTIMODAL_EMBEDDING_MODELS else "openai"
+            case LlmProviders.VOYAGE.value:
+                from litellm.utils import ProviderConfigManager
+
+                config: Final = ProviderConfigManager.get_provider_embedding_config(
+                    model=provider_model, provider=LlmProviders.VOYAGE
+                )
+                return "voyage_multimodal" if isinstance(config, litellm.VoyageMultimodalEmbeddingConfig) else "openai"
+            case _:
+                return "openai"
+
+    def _count_embedding_pre_call_check_tokens(
+        self, model: str, healthy_deployments: Sequence[Mapping[str, object]], input: str | Sequence[object]
+    ) -> int:
+        """Tokens one embedding holds, read as each context-limited deployment's provider reads the input.
+
+        A model group whose deployments read the input differently is checked against the largest reading.
+        """
+        layouts: Final[frozenset[EmbeddingTokenLayout]] = frozenset(
+            self._embedding_token_layout(deployment)
+            for deployment in healthy_deployments
+            if self._deployment_max_input_tokens(model, deployment) is not None
+        )
+        return max((count_embedding_input_tokens(input, layout) for layout in layouts), default=0)
+
+    def _pre_call_check_token_count(
+        self,
+        model: str,
+        healthy_deployments: Sequence[Mapping[str, object]],
+        messages: Sequence[Mapping[str, object]] | None,
+        input: str | Sequence[object] | None,
+        request_kwargs: Mapping[str, object] | None,
+    ) -> int:
+        if (
+            input is not None
+            and request_kwargs is not None
+            and request_kwargs.get("_litellm_is_embedding") is _EMBEDDING_REQUEST
+        ):
+            return self._count_embedding_pre_call_check_tokens(model, healthy_deployments, input)
+        return self._count_pre_call_check_tokens(messages=messages, input=input, request_kwargs=request_kwargs)
+
     async def _acount_pre_call_check_tokens(
         self,
         model: str,
@@ -12918,9 +13010,11 @@ class Router:
         try:
             if not self._pre_call_checks_need_token_count(model, healthy_deployments):
                 return None
-            return await offload_token_count(self._count_pre_call_check_tokens)(
-                messages=cast(list[dict[str, str]] | None, messages),  # cast-ok: forwarded to the sync counter
-                input=cast(str | list | None, input),  # cast-ok: forwarded to the sync counter
+            return await offload_token_count(self._pre_call_check_token_count)(
+                model=model,
+                healthy_deployments=healthy_deployments,
+                messages=messages,
+                input=input,
                 request_kwargs=request_kwargs,
             )
         except Exception as e:  # noqa: BLE001  # best-effort: an uncountable prompt must not fail the request
@@ -12999,8 +13093,12 @@ class Router:
                         if skip_inline_token_count:
                             return _returned_deployments
                         try:
-                            input_tokens = self._count_pre_call_check_tokens(
-                                messages=messages, input=input, request_kwargs=request_kwargs
+                            input_tokens = self._pre_call_check_token_count(
+                                model=model,
+                                healthy_deployments=healthy_deployments,
+                                messages=messages,
+                                input=input,
+                                request_kwargs=request_kwargs,
                             )
                         except Exception as e:
                             verbose_router_logger.error(

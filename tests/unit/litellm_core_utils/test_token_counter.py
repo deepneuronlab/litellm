@@ -35,6 +35,7 @@ from litellm.litellm_core_utils.token_counter import (
     _get_extrapolating_count_function,
     _get_tiktoken_count_function,
     calculate_img_tokens,
+    count_embedding_input_tokens,
     high_detail_image_token_upper_bound,
     offload_token_count,
 )
@@ -1623,6 +1624,43 @@ def test_pdf_document_without_pypdf_is_priced_like_an_image(monkeypatch: pytest.
 def _png_data_url(width: int, height: int) -> str:
     ihdr = b"\x89PNG\r\n\x1a\n" + (13).to_bytes(4, "big") + b"IHDR" + width.to_bytes(4, "big") + height.to_bytes(4, "big")
     return "data:image/png;base64," + base64.b64encode(ihdr + b"\x08\x06\x00\x00\x00").decode()
+
+
+def test_embedding_combined_text_counts_parts_but_keeps_batch_items_independent() -> None:
+    parts: Final = ["hello world", "hello world"]
+    expected: Final = sum(token_counter_new(text=part) for part in parts)
+    assert count_embedding_input_tokens([parts, ["hello"]]) == expected
+
+
+def test_embedding_file_block_uses_content_accounting_without_chat_framing() -> None:
+    image: Final = _png_data_url(1, 1)
+    file_block: Final = {"type": "file", "file": {"file_data": image, "format": "image/png"}}
+    expected: Final = token_counter_new(text="hello world") + calculate_img_tokens(
+        image, mode="auto", use_default_image_token_count=True
+    )
+    assert count_embedding_input_tokens([["hello world", file_block], ["hello"]]) == expected
+
+
+def test_embedding_image_url_is_sized_without_fetching_it() -> None:
+    unreachable_image: Final = {"type": "image_url", "image_url": {"url": "http://127.0.0.1:9/a.png", "detail": "high"}}
+    expected: Final = calculate_img_tokens("http://127.0.0.1:9/a.png", use_default_image_token_count=True)
+    assert count_embedding_input_tokens([[unreachable_image]]) == expected
+
+
+@pytest.mark.parametrize(
+    "media",
+    [
+        pytest.param("gs://bucket/clip.mp4", id="gcs"),
+        pytest.param("files/abc123", id="files-api"),
+        pytest.param(
+            {"type": "file", "file": {"file_data": "data:audio/wav;base64,UklGRg==", "format": "audio/wav"}},
+            id="inline-audio",
+        ),
+    ],
+)
+def test_gemini_embedding_media_without_a_local_size_leaves_a_text_lower_bound(media: object) -> None:
+    lower_bound: Final = token_counter_new(text="hello world")
+    assert count_embedding_input_tokens([["hello world", media]], "media_strings") == lower_bound
 
 
 @pytest.mark.parametrize(("width", "height"), [(1, 1), (768, 768), (2000, 768), (768, 2000), (4096, 4096), (8000, 3072)])
