@@ -6584,6 +6584,49 @@ async def test_async_embedding_rejects_an_item_over_its_context_limit(
         await router.aembedding(model="embedding-precheck", input=embedding_input, mock_response=[0.1, 0.2])
 
 
+@pytest.mark.parametrize(
+    "deployment_model, layout",
+    [
+        pytest.param("text-embedding-3-large", "openai", id="openai"),
+        pytest.param("gemini/gemini-embedding-001", "gemini_batch", id="gemini"),
+        pytest.param("vertex_ai/gemini-embedding-2", "gemini_embed_content", id="vertex-embed-content"),
+        pytest.param("vertex_ai/text-embedding-005", "openai", id="vertex-predict"),
+        pytest.param("voyage/voyage-multimodal-3", "voyage_multimodal", id="voyage-multimodal"),
+        pytest.param("voyage/voyage-3", "openai", id="voyage-text"),
+    ],
+)
+def test_embedding_token_layout_follows_embedding_dispatch(deployment_model: str, layout: str) -> None:
+    router: Final = _embedding_context_router(deployment_model=deployment_model)
+    assert router._embedding_token_layout(router.model_list[0]) == layout
+
+
+def test_vertex_embedding_uses_embed_content_only_for_flagged_models() -> None:
+    from litellm.router import _vertex_embedding_uses_embed_content
+
+    assert _vertex_embedding_uses_embed_content("gemini-embedding-2") is True
+    assert _vertex_embedding_uses_embed_content("text-embedding-005") is False
+    assert _vertex_embedding_uses_embed_content("not-a-mapped-model") is False
+
+
+def test_mixed_embedding_group_is_checked_against_its_largest_reading() -> None:
+    router: Final = Router(
+        model_list=[
+            {
+                "model_name": "embedding-precheck",
+                "litellm_params": {"model": deployment_model, "api_key": "test-key"},
+                "model_info": {"max_input_tokens": 3},
+            }
+            for deployment_model in ("text-embedding-3-large", "vertex_ai/gemini-embedding-2")
+        ],
+        enable_pre_call_checks=True,
+        num_retries=0,
+    )
+    parts: Final = ["hello world", "hello world"]
+    assert router._count_embedding_pre_call_check_tokens("embedding-precheck", router.model_list, parts) == sum(
+        litellm.token_counter(text=part) for part in parts
+    )
+
+
 def test_vertex_embed_content_rejects_flat_parts_that_share_one_embedding() -> None:
     parts: Final = ["hello world", "hello world"]
     vertex_router: Final = _embedding_context_router(deployment_model="vertex_ai/gemini-embedding-2")
