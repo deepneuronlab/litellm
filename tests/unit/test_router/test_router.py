@@ -1,4 +1,4 @@
-import ast, asyncio, importlib, time
+import ast, asyncio, base64, importlib, time
 import copy
 import functools
 import gc
@@ -9,7 +9,7 @@ import os
 import sys
 import threading
 import warnings
-from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Final, Literal
@@ -31,6 +31,7 @@ from litellm.caching.in_memory_cache import InMemoryCache
 from litellm.caching.redis_cache import _redis_circuit_breaker_guard
 from litellm.exceptions import GuardrailRaisedException, MidStreamFallbackError, ModifyResponseException
 from litellm.litellm_core_utils.streaming_handler import CustomStreamWrapper
+from litellm.litellm_core_utils.token_counter import calculate_img_tokens
 from litellm.integrations.custom_guardrail import CustomGuardrail
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.integrations.otel.plumbing.context import set_request_root_span
@@ -6488,18 +6489,30 @@ def test_count_pre_call_check_tokens_across_api_surfaces():
 
 def _embedding_context_router(
     routing_strategy: Literal["simple-shuffle", "usage-based-routing", "lar1"] = "simple-shuffle",
+    deployment_model: str = "text-embedding-3-large",
+    max_input_tokens: int = 3,
 ) -> Router:
     return Router(
         model_list=[
             {
                 "model_name": "embedding-precheck",
-                "litellm_params": {"model": "text-embedding-3-large", "api_key": "test-key"},
-                "model_info": {"max_input_tokens": 3},
+                "litellm_params": {"model": deployment_model, "api_key": "test-key"},
+                "model_info": {"max_input_tokens": max_input_tokens},
             }
         ],
         routing_strategy=routing_strategy,
         enable_pre_call_checks=True,
         num_retries=0,
+    )
+
+
+def _embedding_precheck_count(router: Router, embedding_input: str | Sequence[object]) -> int:
+    return router._pre_call_check_token_count(
+        model="embedding-precheck",
+        healthy_deployments=router.model_list,
+        messages=None,
+        input=embedding_input,
+        request_kwargs={"_litellm_is_embedding": True},
     )
 
 
@@ -6514,9 +6527,7 @@ def test_embedding_context_count_uses_token_ids_without_chat_overhead(
     embedding_input: list[int] | list[list[int]], expected_tokens: int
 ) -> None:
     router: Final = _embedding_context_router()
-    count: Final = router._count_pre_call_check_tokens(
-        messages=None, input=embedding_input, request_kwargs={"_litellm_is_embedding": True}
-    )
+    count: Final = _embedding_precheck_count(router, embedding_input)
     assert count == expected_tokens
 
 
@@ -6533,9 +6544,7 @@ def test_embedding_context_count_tokenizes_each_text_independently(
     router: Final = _embedding_context_router()
     texts: Final = (embedding_input,) if isinstance(embedding_input, str) else embedding_input
     expected_tokens: Final = max(litellm.token_counter(text=text) for text in texts)
-    count: Final = router._count_pre_call_check_tokens(
-        messages=None, input=embedding_input, request_kwargs={"_litellm_is_embedding": True}
-    )
+    count: Final = _embedding_precheck_count(router, embedding_input)
     assert count == expected_tokens
 
 
@@ -6573,6 +6582,46 @@ async def test_async_embedding_rejects_an_item_over_its_context_limit(
     router: Final = _embedding_context_router(routing_strategy)
     with pytest.raises(litellm.ContextWindowExceededError):
         await router.aembedding(model="embedding-precheck", input=embedding_input, mock_response=[0.1, 0.2])
+
+
+def test_vertex_embed_content_rejects_flat_parts_that_share_one_embedding() -> None:
+    parts: Final = ["hello world", "hello world"]
+    vertex_router: Final = _embedding_context_router(deployment_model="vertex_ai/gemini-embedding-2")
+    assert _embedding_precheck_count(vertex_router, parts) == sum(litellm.token_counter(text=part) for part in parts)
+    with pytest.raises(litellm.ContextWindowExceededError):
+        vertex_router.embedding(model="embedding-precheck", input=parts, mock_response=[0.1, 0.2])
+
+
+@pytest.mark.parametrize("deployment_model", ["text-embedding-3-large", "gemini/gemini-embedding-001"])
+def test_batch_providers_check_flat_parts_as_separate_embeddings(deployment_model: str) -> None:
+    parts: Final = ["hello world", "hello world"]
+    router: Final = _embedding_context_router(deployment_model=deployment_model)
+    assert _embedding_precheck_count(router, parts) == litellm.token_counter(text="hello world")
+
+
+def test_gemini_embedding_counts_an_inline_image_string_as_media_not_text() -> None:
+    image: Final = "data:image/png;base64," + base64.b64encode(bytes(range(256)) * 8).decode()
+    router: Final = _embedding_context_router(deployment_model="gemini/gemini-embedding-001", max_input_tokens=100)
+    assert litellm.token_counter(text=image) > 100
+    assert _embedding_precheck_count(router, [image]) == calculate_img_tokens(image, mode="auto")
+    response: Final = router.embedding(model="embedding-precheck", input=[image], mock_response=[0.1, 0.2])
+    assert response.data[0]["embedding"] == [0.1, 0.2]
+
+
+def test_voyage_multimodal_envelope_counts_its_content_blocks() -> None:
+    envelope: Final = {
+        "content": [
+            {"type": "text", "text": "hello world"},
+            {"type": "image_url", "image_url": "https://example.com/image.png"},
+        ]
+    }
+    router: Final = _embedding_context_router(deployment_model="voyage/voyage-multimodal-3")
+    expected: Final = litellm.token_counter(text="hello world") + calculate_img_tokens(
+        "https://example.com/image.png", mode="auto"
+    )
+    assert _embedding_precheck_count(router, [envelope, "hello"]) == expected
+    with pytest.raises(litellm.ContextWindowExceededError):
+        router.embedding(model="embedding-precheck", input=[envelope], mock_response=[0.1, 0.2])
 
 
 @pytest.mark.parametrize("embedding_input", [[11, 12, 13, 14], [[11, 12, 13, 14]]])

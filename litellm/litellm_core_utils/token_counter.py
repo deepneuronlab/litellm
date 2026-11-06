@@ -6,14 +6,14 @@ import math
 import struct
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from itertools import accumulate
-from typing import TYPE_CHECKING, Final, Literal, cast
+from typing import TYPE_CHECKING, Final, Literal, TypeAlias, cast
 
 import anyio
 import anyio.lowlevel
 import httpx
 import tiktoken
 from pydantic import TypeAdapter
-from typing_extensions import ParamSpec, TypeVar
+from typing_extensions import ParamSpec, ReadOnly, TypedDict, TypeVar
 
 import litellm
 from litellm import verbose_logger
@@ -67,6 +67,13 @@ from litellm.types.utils import Message, SelectTokenizerResponse
 _EMBEDDING_CONTENT_ADAPTER: Final[TypeAdapter[OpenAIMessageContentListBlock]] = TypeAdapter(
     OpenAIMessageContentListBlock
 )
+
+
+class _VoyageEmbeddingEnvelope(TypedDict):
+    content: ReadOnly[Sequence[Mapping[str, object]]]
+
+
+_VOYAGE_ENVELOPE_ADAPTER: Final = TypeAdapter(_VoyageEmbeddingEnvelope)
 
 
 def get_modified_max_tokens(
@@ -411,27 +418,115 @@ class _MessageCountParams:
         self.count_function = _get_count_function(model, custom_tokenizer)
 
 
-def count_embedding_input_tokens(input: str | Sequence[object]) -> int:
+EmbeddingTokenLayout: TypeAlias = Literal["openai", "gemini_batch", "gemini_embed_content", "voyage_multimodal"]
+"""
+How a provider turns an embedding `input` into embeddings, which decides what one context window holds.
+
+- openai: each top-level item is one embedding; a nested list is one item made of its parts.
+- gemini_batch: as openai, but data:, gs:// and files/ strings are media, not text.
+- gemini_embed_content: the whole input is one multipart embedding, so every part shares one window.
+- voyage_multimodal: each item is text or a `{"content": [...]}` envelope of text and image blocks.
+"""
+
+
+def count_embedding_input_tokens(input: str | Sequence[object], layout: EmbeddingTokenLayout = "openai") -> int:
+    """Tokens in the largest single embedding `input` produces, the amount one context window must hold."""
     if litellm.disable_token_counter is True:
         return 0
-    if isinstance(input, str):
-        return token_counter(text=input)
-    if not input or isinstance(input[0], int):
-        return len(input)
+    items: Final = (input,) if isinstance(input, str) else input
+    if not items or isinstance(items[0], int):
+        return len(items)
     count_function: Final = _get_count_function("")
-    return max(_count_embedding_item_tokens(item, count_function) for item in input)
+    item_tokens: Final = tuple(_count_embedding_item_tokens(item, layout, count_function) for item in items)
+    return sum(item_tokens) if layout == "gemini_embed_content" else max(item_tokens)
 
 
-def _count_embedding_item_tokens(item: object, count_function: TokenCounterFunction) -> int:
+def _count_embedding_item_tokens(
+    item: object, layout: EmbeddingTokenLayout, count_function: TokenCounterFunction
+) -> int:
+    if layout == "voyage_multimodal":
+        return _count_voyage_item_tokens(item, count_function)
+    parts: Final = (
+        cast(Sequence[object], item)  # cast-ok: a non-str Sequence item is the list of one embedding's parts
+        if isinstance(item, Sequence) and not isinstance(item, str)
+        else (item,)
+    )
+    if parts and isinstance(parts[0], int):
+        return len(parts)
+    if layout == "openai":
+        return sum(_count_openai_embedding_part_tokens(part, count_function) for part in parts)
+    return sum(_count_gemini_embedding_part_tokens(part, count_function) for part in parts)
+
+
+def _count_openai_embedding_part_tokens(part: object, count_function: TokenCounterFunction) -> int:
+    if isinstance(part, str):
+        return count_function(part)
+    content: Final = _EMBEDDING_CONTENT_ADAPTER.validate_python(part)
+    return _count_content_list(count_function, (content,), True, None)  # never fetch an image URL to size it
+
+
+def _count_gemini_embedding_part_tokens(part: object, count_function: TokenCounterFunction) -> int:
+    """Read the part the way the Gemini request transform does: text, or media from a string or file block."""
+    from litellm.llms.vertex_ai.gemini_embeddings.batch_embed_content_transformation import (
+        embedding_element_source,
+        embedding_source_kind,
+        inline_embedding_media_type,
+    )
+
+    source, mime_type_override = embedding_element_source(part)
+    match embedding_source_kind(source):
+        case "text":
+            return count_function(source)
+        case "remote":
+            return _unmeasured_embedding_media_tokens()
+        case "inline":
+            return _count_inline_embedding_media_tokens(
+                source, inline_embedding_media_type(source, mime_type_override), count_function
+            )
+
+
+def _count_inline_embedding_media_tokens(data_url: str, media_type: str, count_function: TokenCounterFunction) -> int:
+    if media_type.startswith("image/"):
+        return calculate_img_tokens(data=data_url, mode="auto")
+    if media_type == "application/pdf":
+        return _count_opaque_document_tokens(data_url, count_function, False)
+    return _unmeasured_embedding_media_tokens()
+
+
+class UnmeasurableEmbeddingMediaError(ValueError):
+    """The input holds media whose size is unknown locally, so its token count is unknown, not zero."""
+
+
+def _unmeasured_embedding_media_tokens() -> int:
+    raise UnmeasurableEmbeddingMediaError(
+        "Embedding input holds remote or audio/video media that cannot be measured without fetching it"
+    )
+
+
+def _count_voyage_item_tokens(item: object, count_function: TokenCounterFunction) -> int:
     if isinstance(item, str):
         return count_function(item)
-    if isinstance(item, Sequence):
-        parts: Final = cast(Sequence[object], item)  # cast-ok: checked Sequence
-        if not parts or isinstance(parts[0], int):
-            return len(parts)
-        return sum(_count_embedding_item_tokens(part, count_function) for part in parts)
-    content: Final = _EMBEDDING_CONTENT_ADAPTER.validate_python(item)
-    return _count_content_list(count_function, (content,), False, None)
+    envelope: Final = _VOYAGE_ENVELOPE_ADAPTER.validate_python(item)
+    return sum(_count_voyage_block_tokens(block, count_function) for block in envelope["content"])
+
+
+def _count_voyage_block_tokens(block: Mapping[str, object], count_function: TokenCounterFunction) -> int:
+    """Voyage keeps text and image_url blocks and accepts its own image_base64 block."""
+    match block.get("type"):
+        case "text":
+            return count_function(str(block.get("text", "")))
+        case "image_url":
+            image_url: Final = block.get("image_url")
+            url: Final = (
+                cast(Mapping[str, object], image_url).get("url")  # cast-ok: OpenAI image_url object shape
+                if isinstance(image_url, Mapping)
+                else image_url
+            )
+            return calculate_img_tokens(data=url, mode="auto")
+        case "image_base64":
+            return calculate_img_tokens(data=block.get("image_base64"), mode="auto")
+        case other:
+            raise ValueError(f"Unsupported Voyage multimodal content block type: {other!r}")
 
 
 def token_counter(

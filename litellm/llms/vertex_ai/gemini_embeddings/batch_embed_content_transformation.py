@@ -323,6 +323,28 @@ def flatten_media_sources(input: GeminiEmbeddingInput) -> tuple[str, ...]:
     return tuple(_element_source(element) for element in _elements(input))
 
 
+def embedding_element_source(element: object) -> tuple[str, str | None]:
+    """An element's source and explicit media type, read as the request transform reads them."""
+    if isinstance(element, str):
+        return element, None
+    block: Final = _parse_file_block(element, drop_params=True)
+    return _file_block_source(block), block.file.format
+
+
+def embedding_source_kind(source: str) -> Literal["text", "inline", "remote"]:
+    """Whether Gemini receives a source as text, inline media bytes, or a media URI it fetches itself."""
+    if _is_data_url(source):
+        return "inline"
+    if _is_gcs_url(source) or is_file_reference(source):
+        return "remote"
+    return "text"
+
+
+def inline_embedding_media_type(data_url: str, mime_type_override: str | None) -> str:
+    """The media type Gemini receives for an inline data: source; raises ValueError for an unsupported type."""
+    return _parse_data_url(data_url, mime_type_override)[0]
+
+
 def _is_multimodal_input(input: GeminiEmbeddingInput) -> bool:
     """
     Check if the input contains multimodal data (data URIs, file references,

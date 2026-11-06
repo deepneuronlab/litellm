@@ -129,7 +129,15 @@ Router context-window prechecks distinguish embedding inputs from Chat Completio
 and Responses inputs. Embedding token arrays are already tokenized; text inputs are
 counted without chat-message framing. Combined inputs sum their text and media parts
 using the shared content counter. For a batch, the largest individual input is
-checked against each deployment's context window, not the sum of the batch. Async
+checked against each deployment's context window, not the sum of the batch. The
+input is read the way each limited deployment's provider reads it: Gemini treats
+`data:`, `gs://` and `files/` strings as media, a Vertex AI `embedContent` model
+turns a flat list into one embedding whose parts share the window, and Voyage
+multimodal items are `{"content": [...]}` envelopes. A model group whose deployments
+read the input differently is checked against the largest reading. Media with no
+local size (remote `gs://`/`files/` references, audio and video) makes the count
+unknown rather than zero, so that request is not filtered by context window. Images
+use the base image count and are never fetched to size them. Async
 counting stays off the event loop. Embedding mode travels through the existing
 request kwargs contract, preserving custom routing and healthy-deployment override
 signatures, and is removed before the provider call. Chat and Responses retain
