@@ -418,12 +418,12 @@ class _MessageCountParams:
         self.count_function = _get_count_function(model, custom_tokenizer)
 
 
-EmbeddingTokenLayout: TypeAlias = Literal["openai", "gemini_batch", "gemini_embed_content", "voyage_multimodal"]
+EmbeddingTokenLayout: TypeAlias = Literal["openai", "media_strings", "gemini_embed_content", "voyage_multimodal"]
 """
 How a provider turns an embedding `input` into embeddings, which decides what one context window holds.
 
 - openai: each top-level item is one embedding; a nested list is one item made of its parts.
-- gemini_batch: as openai, but data:, gs:// and files/ strings are media, not text.
+- media_strings: as openai, but data:, gs:// and files/ strings are media, not text (Gemini, Vertex AI predict, Bedrock).
 - gemini_embed_content: the whole input is one multipart embedding, so every part shares one window.
 - voyage_multimodal: each item is text or a `{"content": [...]}` envelope of text and image blocks.
 """

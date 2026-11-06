@@ -32,6 +32,7 @@ from litellm.caching.redis_cache import _redis_circuit_breaker_guard
 from litellm.exceptions import GuardrailRaisedException, MidStreamFallbackError, ModifyResponseException
 from litellm.litellm_core_utils.streaming_handler import CustomStreamWrapper
 from litellm.litellm_core_utils.token_counter import calculate_img_tokens
+from litellm.router import _EMBEDDING_REQUEST
 from litellm.integrations.custom_guardrail import CustomGuardrail
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.integrations.otel.plumbing.context import set_request_root_span
@@ -6512,7 +6513,7 @@ def _embedding_precheck_count(router: Router, embedding_input: str | Sequence[ob
         healthy_deployments=router.model_list,
         messages=None,
         input=embedding_input,
-        request_kwargs={"_litellm_is_embedding": True},
+        request_kwargs={"_litellm_is_embedding": _EMBEDDING_REQUEST},
     )
 
 
@@ -6588,9 +6589,10 @@ async def test_async_embedding_rejects_an_item_over_its_context_limit(
     "deployment_model, layout",
     [
         pytest.param("text-embedding-3-large", "openai", id="openai"),
-        pytest.param("gemini/gemini-embedding-001", "gemini_batch", id="gemini"),
+        pytest.param("gemini/gemini-embedding-001", "media_strings", id="gemini"),
         pytest.param("vertex_ai/gemini-embedding-2", "gemini_embed_content", id="vertex-embed-content"),
-        pytest.param("vertex_ai/text-embedding-005", "openai", id="vertex-predict"),
+        pytest.param("vertex_ai/multimodalembedding@001", "media_strings", id="vertex-predict"),
+        pytest.param("bedrock/amazon.titan-embed-image-v1", "media_strings", id="bedrock"),
         pytest.param("voyage/voyage-multimodal-3", "voyage_multimodal", id="voyage-multimodal"),
         pytest.param("voyage/voyage-3", "openai", id="voyage-text"),
     ],
@@ -6625,6 +6627,27 @@ def test_mixed_embedding_group_is_checked_against_its_largest_reading() -> None:
     assert router._count_embedding_pre_call_check_tokens("embedding-precheck", router.model_list, parts) == sum(
         litellm.token_counter(text=part) for part in parts
     )
+
+
+def test_client_supplied_embedding_marker_keeps_responses_accounting() -> None:
+    router: Final = _embedding_context_router()
+    request_kwargs: Final = {"_litellm_is_embedding": True, "instructions": "be terse " * 20}
+    forged: Final = router._pre_call_check_token_count(
+        model="embedding-precheck",
+        healthy_deployments=router.model_list,
+        messages=None,
+        input="hello",
+        request_kwargs=request_kwargs,
+    )
+    assert forged == router._count_pre_call_check_tokens(messages=None, input="hello", request_kwargs=request_kwargs)
+    assert forged > litellm.token_counter(text="hello")
+
+
+@pytest.mark.parametrize("deployment_model", ["vertex_ai/multimodalembedding@001", "bedrock/amazon.titan-embed-image-v1"])
+def test_image_embedding_providers_count_a_data_image_string_as_an_image(deployment_model: str) -> None:
+    image: Final = "data:image/png;base64," + base64.b64encode(bytes(range(256)) * 8).decode()
+    router: Final = _embedding_context_router(deployment_model=deployment_model, max_input_tokens=100)
+    assert _embedding_precheck_count(router, [image]) == calculate_img_tokens(image, mode="auto")
 
 
 def test_vertex_embed_content_rejects_flat_parts_that_share_one_embedding() -> None:

@@ -1660,7 +1660,7 @@ def test_embedding_image_url_is_sized_without_fetching_it() -> None:
 )
 def test_gemini_embedding_media_without_a_local_size_leaves_a_text_lower_bound(media: object) -> None:
     lower_bound: Final = token_counter_new(text="hello world")
-    assert count_embedding_input_tokens([["hello world", media]], "gemini_batch") == lower_bound
+    assert count_embedding_input_tokens([["hello world", media]], "media_strings") == lower_bound
 
 
 @pytest.mark.parametrize(("width", "height"), [(1, 1), (768, 768), (2000, 768), (768, 2000), (4096, 4096), (8000, 3072)])

@@ -552,6 +552,10 @@ def _configured_model_info(deployment: Mapping[str, object]) -> Mapping[str, obj
     return _MODEL_INFO_ADAPTER.validate_python(deployment.get("model_info") or {})
 
 
+_EMBEDDING_REQUEST: Final = object()
+"""Marks router-originated embedding calls; an object, so no client JSON field can forge it."""
+
+
 def _vertex_embedding_uses_embed_content(model: str) -> bool:
     """Mirrors `litellm.embedding`: a Vertex AI model flagged `uses_embed_content` takes one multipart request."""
     try:
@@ -6252,7 +6256,7 @@ class Router:
         model_name = None
         try:
             verbose_router_logger.debug("Inside embedding()- model: %s; kwargs: %s", model, kwargs)
-            kwargs["_litellm_is_embedding"] = True  # rebind-ok: request-local marker is removed in finally
+            kwargs["_litellm_is_embedding"] = _EMBEDDING_REQUEST  # rebind-ok: removed in finally
             try:
                 deployment: Final = self.get_available_deployment(
                     model=model,
@@ -6332,7 +6336,7 @@ class Router:
         try:
             verbose_router_logger.debug("Inside _aembedding()- model: %s; kwargs: %s", model, kwargs)
             parent_otel_span: Final = get_parent_otel_span_from_kwargs(kwargs)
-            kwargs["_litellm_is_embedding"] = True  # rebind-ok: request-local marker is removed in finally
+            kwargs["_litellm_is_embedding"] = _EMBEDDING_REQUEST  # rebind-ok: removed in finally
             try:
                 deployment: Final = await self.async_get_available_deployment(
                     model=model,
@@ -12937,10 +12941,12 @@ class Router:
         except Exception:  # noqa: BLE001  # an unresolvable deployment reads input the default way
             return "openai"
         match provider:
-            case LlmProviders.GEMINI.value:
-                return "gemini_batch"
+            case LlmProviders.GEMINI.value | LlmProviders.BEDROCK.value:
+                return "media_strings"
             case LlmProviders.VERTEX_AI.value:
-                return "gemini_embed_content" if _vertex_embedding_uses_embed_content(provider_model) else "openai"
+                return (
+                    "gemini_embed_content" if _vertex_embedding_uses_embed_content(provider_model) else "media_strings"
+                )
             case LlmProviders.VOYAGE.value:
                 from litellm.utils import ProviderConfigManager
 
@@ -12973,7 +12979,11 @@ class Router:
         input: str | Sequence[object] | None,
         request_kwargs: Mapping[str, object] | None,
     ) -> int:
-        if input is not None and request_kwargs is not None and request_kwargs.get("_litellm_is_embedding") is True:
+        if (
+            input is not None
+            and request_kwargs is not None
+            and request_kwargs.get("_litellm_is_embedding") is _EMBEDDING_REQUEST
+        ):
             return self._count_embedding_pre_call_check_tokens(model, healthy_deployments, input)
         return self._count_pre_call_check_tokens(messages=messages, input=input, request_kwargs=request_kwargs)
 

@@ -130,8 +130,8 @@ and Responses inputs. Embedding token arrays are already tokenized; text inputs 
 counted without chat-message framing. Combined inputs sum their text and media parts
 using the shared content counter. For a batch, the largest individual input is
 checked against each deployment's context window, not the sum of the batch. The
-input is read the way each limited deployment's provider reads it: Gemini treats
-`data:`, `gs://` and `files/` strings as media, a Vertex AI `embedContent` model
+input is read the way each limited deployment's provider reads it: Gemini, Vertex AI
+predict and Bedrock treat `data:`, `gs://` and `files/` strings as media, a Vertex AI `embedContent` model
 turns a flat list into one embedding whose parts share the window, and Voyage
 multimodal items are `{"content": [...]}` envelopes. A model group whose deployments
 read the input differently is checked against the largest reading. Media with no
@@ -140,7 +140,7 @@ measured: it adds nothing, so the count is a lower bound. Measured parts that al
 exceed the window are still rejected; the provider enforces the rest. Images
 use the base image count and are never fetched to size them. Async
 counting stays off the event loop. Embedding mode travels through the existing
-request kwargs contract, preserving custom routing and healthy-deployment override
+request kwargs contract as a non-JSON sentinel, so a client field cannot forge it, preserving custom routing and healthy-deployment override
 signatures, and is removed before the provider call. Chat and Responses retain
 their system, tool and instruction token accounting. `disable_token_counter` skips
 embedding accounting for all input shapes, including pre-tokenized vectors
